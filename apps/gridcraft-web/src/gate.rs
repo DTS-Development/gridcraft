@@ -162,6 +162,36 @@ mod tests {
         assert!(!app.grid.ensure_visible);
     }
 
+    /// The shared tag-check fixture: every xlsx probe location must select the cell holding the tag.
+    #[test]
+    fn goto_probes_of_the_shared_fixture_select_the_tagged_cells() {
+        let (wb, _) = gridcraft_engine::io::open_bytes("jump.xlsx", include_bytes!("../tests/fixtures/jump.xlsx")).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/expected.json")).unwrap();
+        let mut s = gridcraft_engine::Session::new();
+        s.add_document(gridcraft_engine::DocState::new(wb, None, "jump.xlsx".into()));
+        let mut app = gridcraft_ui_egui::SheetApp::new(s, Default::default());
+        let probes = expected["xlsx"]["probes"].as_array().unwrap();
+        assert!(!probes.is_empty());
+        // Every error and warning location of the fixture must be reachable too.
+        let mut locations: Vec<&serde_json::Value> = probes.iter().map(|p| &p["location"]).collect();
+        locations.extend(["errors", "warnings"].iter().flat_map(|k| expected["xlsx"][k].as_array().unwrap()).map(|e| &e["location"]));
+        for loc in locations {
+            let (sheet, cell) = (loc["sheet"].as_str().unwrap(), loc["cell"].as_str().unwrap());
+            assert_eq!(goto_xlsx(&mut app, sheet, cell), Ok(()), "{sheet}!{cell}");
+            let d = app.session.active().unwrap();
+            assert_eq!(d.wb.active().unwrap().name, sheet);
+            assert_eq!(d.selection.active.a1(), cell);
+        }
+        for p in probes {
+            let (sheet, cell) = (p["location"]["sheet"].as_str().unwrap(), p["location"]["cell"].as_str().unwrap());
+            goto_xlsx(&mut app, sheet, cell).unwrap();
+            let d = app.session.active().unwrap();
+            let at = d.selection.active;
+            let text = d.wb.active().unwrap().value(at).display();
+            assert_eq!(text, p["cell"].as_str().unwrap(), "{sheet}!{cell}");
+        }
+    }
+
     #[test]
     fn a_ppm_build_without_the_parent_page_opens_nothing() {
         assert_eq!(decide(true, None, false), Start::OpenFromPpm, "opened directly");
