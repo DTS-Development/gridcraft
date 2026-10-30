@@ -107,6 +107,7 @@ impl eframe::App for WebShell {
             bridge.apply_policy(&self.app);
             #[cfg(feature = "ppm-host")]
             bridge.replace_documents(&mut self.app);
+            bridge.apply_gotos(&mut self.app);
         }
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         // Host lock: the host sends the files; dropped ones are ignored.

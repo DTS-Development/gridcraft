@@ -76,6 +76,21 @@ pub fn bytes_purpose(purpose: &str) -> Option<&'static str> {
     ["save", "check", "preview"].into_iter().find(|p| *p == purpose)
 }
 
+/// Selects `cell` on `sheet` and asks the grid to scroll it into view (`gridcraft:goto`, an `xlsx`
+/// location). The `Err` is the `reason` of `gridcraft:goto-failed`: a sheet or cell that is not there is
+/// `not-found`. The sheet is checked and the cell parsed first, so a miss leaves the view where it was.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub fn goto_xlsx(app: &mut gridcraft_ui_egui::SheetApp, sheet: &str, cell: &str) -> Result<(), &'static str> {
+    let has_sheet = app.session.active().is_some_and(|d| d.wb.sheet_index(sheet).is_some());
+    if !has_sheet || gridcraft_engine::core::CellRef::parse(cell).is_none() {
+        return Err("not-found");
+    }
+    // The sheet goes in its own parameter, so a name holding `'` or `!` needs no quoting.
+    app.run("selection.set", serde_json::json!({"sheet": sheet, "range": cell})).map_err(|_| "error")?;
+    app.grid.ensure_visible = true;
+    Ok(())
+}
+
 /// The most fonts one `gridcraft:add-fonts` takes; the rest are reported as failed.
 pub const MAX_FONTS_PER_MESSAGE: usize = 64;
 
@@ -98,6 +113,54 @@ pub fn font_format_ok(format: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_sheets(names: &[&str]) -> gridcraft_ui_egui::SheetApp {
+        let mut s = gridcraft_engine::Session::new();
+        s.new_workbook();
+        for _ in 1..names.len() {
+            s.run("home.insertSheet", serde_json::json!({})).unwrap();
+        }
+        for (i, name) in names.iter().enumerate() {
+            s.run("sheet.rename", serde_json::json!({"sheet": i, "name": name})).unwrap();
+        }
+        s.run("sheet.activate", serde_json::json!({"sheet": 0})).unwrap();
+        gridcraft_ui_egui::SheetApp::new(s, Default::default())
+    }
+
+    fn selected(app: &gridcraft_ui_egui::SheetApp) -> (usize, String) {
+        let d = app.session.active().unwrap();
+        (d.wb.active_sheet, d.selection.active.a1())
+    }
+
+    #[test]
+    fn goto_switches_sheet_selects_the_cell_and_scrolls() {
+        let mut app = app_with_sheets(&["Sheet1", "Sheet2"]);
+        assert_eq!(goto_xlsx(&mut app, "Sheet2", "B7"), Ok(()));
+        assert_eq!(selected(&app), (1, "B7".into()));
+        assert!(app.grid.ensure_visible);
+        assert_eq!(goto_xlsx(&mut app, "Sheet1", "C3"), Ok(()));
+        assert_eq!(selected(&app), (0, "C3".into()));
+    }
+
+    #[test]
+    fn goto_handles_sheet_names_with_spaces_quotes_and_bangs() {
+        let mut app = app_with_sheets(&["Sheet1", "My Sheet", "Bob's", "a!b"]);
+        for (sheet, i) in [("My Sheet", 1), ("Bob's", 2), ("a!b", 3)] {
+            assert_eq!(goto_xlsx(&mut app, sheet, "D12"), Ok(()), "{sheet}");
+            assert_eq!(selected(&app), (i, "D12".into()));
+        }
+    }
+
+    #[test]
+    fn goto_a_missing_sheet_or_bad_cell_is_not_found_and_leaves_the_view() {
+        let mut app = app_with_sheets(&["Sheet1", "Sheet2"]);
+        app.grid.ensure_visible = false;
+        for (sheet, cell) in [("Nope", "A1"), ("Sheet2", "B"), ("Sheet2", ""), ("Sheet2", "A1:B2"), ("Sheet2", "XFE1"), ("Sheet2", "A0")] {
+            assert_eq!(goto_xlsx(&mut app, sheet, cell), Err("not-found"), "{sheet}!{cell}");
+        }
+        assert_eq!(selected(&app), (0, "A1".into()));
+        assert!(!app.grid.ensure_visible);
+    }
 
     #[test]
     fn a_ppm_build_without_the_parent_page_opens_nothing() {
