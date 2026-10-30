@@ -35,7 +35,8 @@
 //! - `gridcraft:goto` (from the parent): `{ id, location }`, `location` `{ kind: 'xlsx', sheet, cell }`: the
 //!   sheet becomes the active one, `cell` (an A1 reference) is selected and scrolled into view.
 //! - `gridcraft:goto-done` (to the parent): `{ id }`; or `gridcraft:goto-failed`: `{ id, reason }`, `reason`
-//!   `not-found` (no such sheet or cell), `unsupported` (another `kind`) or `error`.
+//!   `not-found` (no such sheet or cell, or no workbook open yet), `unsupported` (another `kind`) or `error` (a malformed or too long `sheet`/`cell`, or
+//!   more than [`crate::gate::MAX_PENDING_GOTOS`] requests waiting: the oldest is answered and dropped).
 //!
 //! Ctrl/Cmd+S inside the frame is GridCraft's Save (a `gridcraft:save`); the browser's own "save
 //! page" never opens (see [`Bridge::listen`]).
@@ -351,7 +352,18 @@ impl Bridge {
                 }
                 Some("gridcraft:goto") => {
                     if let Some(id) = string(&data, "id").and_then(|id| crate::gate::export_id(&id)) {
-                        gotos.borrow_mut().push((id, goto_target(&data)));
+                        // Full: the oldest waiting request is answered `error` and dropped.
+                        let dropped = {
+                            let mut queue = gotos.borrow_mut();
+                            let dropped = (queue.len() >= crate::gate::MAX_PENDING_GOTOS).then(|| queue.remove(0).0);
+                            queue.push((id, goto_target(&data)));
+                            dropped
+                        };
+                        if let Some(old) = dropped
+                            && !post_to(&parent, &origin, &[("type", "gridcraft:goto-failed".into()), ("id", old.as_str().into()), ("reason", "error".into())])
+                        {
+                            log::error!("couldn't answer the goto request {old}");
+                        }
                         ctx.request_repaint();
                     }
                     return;
@@ -427,7 +439,11 @@ fn goto_target(data: &JsValue) -> Result<(String, String), &'static str> {
     if string(&location, "kind").as_deref() != Some("xlsx") {
         return Err("unsupported");
     }
-    match (string(&location, "sheet"), string(&location, "cell")) {
+    // Too long is refused before it is copied.
+    let short = |key: &str, max: u32| {
+        js_sys::Reflect::get(&location, &JsValue::from_str(key)).ok().and_then(|v| v.dyn_into::<js_sys::JsString>().ok()).filter(|s| s.length() <= max).and_then(|s| s.as_string())
+    };
+    match (short("sheet", crate::gate::MAX_GOTO_SHEET_LEN), short("cell", crate::gate::MAX_GOTO_CELL_LEN)) {
         (Some(sheet), Some(cell)) => Ok((sheet, cell)),
         _ => Err("error"),
     }

@@ -76,6 +76,16 @@ pub fn bytes_purpose(purpose: &str) -> Option<&'static str> {
     ["save", "check", "preview"].into_iter().find(|p| *p == purpose)
 }
 
+/// The most `gridcraft:goto` requests waiting for the next frame; a newer one pushes out the oldest.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_PENDING_GOTOS: usize = 16;
+
+/// The longest sheet name (Excel's limit) and cell reference (`XFD1048576` is 10) a goto takes, in UTF-16 units.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_GOTO_SHEET_LEN: u32 = 31;
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_GOTO_CELL_LEN: u32 = 16;
+
 /// Selects `cell` on `sheet` and asks the grid to scroll it into view (`gridcraft:goto`, an `xlsx`
 /// location). The `Err` is the `reason` of `gridcraft:goto-failed`: a sheet or cell that is not there is
 /// `not-found`. The sheet is checked and the cell parsed first, so a miss leaves the view where it was.
@@ -140,6 +150,12 @@ mod tests {
         assert!(app.grid.ensure_visible);
         assert_eq!(goto_xlsx(&mut app, "Sheet1", "C3"), Ok(()));
         assert_eq!(selected(&app), (0, "C3".into()));
+    }
+
+    #[test]
+    fn goto_before_a_workbook_is_open_is_not_found() {
+        let mut app = gridcraft_ui_egui::SheetApp::new(gridcraft_engine::Session::new(), Default::default());
+        assert_eq!(goto_xlsx(&mut app, "Sheet1", "A1"), Err("not-found"));
     }
 
     #[test]
