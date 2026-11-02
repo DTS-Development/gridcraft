@@ -1096,11 +1096,12 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
 
 fn font_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let name = st.font.name.clone();
-    let resp = ui.add_sized([150.0, 24.0], egui::Button::new(egui::RichText::new(&name).font(theme::ui_font(12.5))));
+    let lang = app.ui.language;
+    let resp = ui.add_sized([150.0, 24.0], egui::Button::new(egui::RichText::new(font_label(lang, &name)).font(theme::ui_font(12.5))));
     control_keytip(app, ui, &resp, "home.fontName");
     let forced = invoke(app, "home.fontName");
-    let names = font_names();
-    let items: Vec<(&str, String)> = names.iter().map(|n| (n.as_str(), n.clone())).collect();
+    let names = if gridcraft_engine::hostlock::HOST_BUILD { host_font_names(lang, &name) } else { font_names() };
+    let items: Vec<(&str, String)> = names.iter().map(|n| (n.as_str(), font_label(lang, n))).collect();
     if let ComboResult::Picked(value) = editable_combo(ui, &resp, "font", &name, &items, forced) {
         act(app, "home.fontName", json!({"name": value}));
     }
@@ -1111,6 +1112,21 @@ fn font_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
 pub(crate) fn font_names() -> Vec<String> {
     let uploaded = crate::fonts::uploaded_families();
     FONTS.iter().map(|f| f.to_string()).chain(uploaded.into_iter().filter(|u| !FONTS.iter().any(|f| f.eq_ignore_ascii_case(u)))).collect()
+}
+
+/// How a font is named on screen: in the PPM build with a Korean interface, its Korean name (나눔고딕)
+/// when its file has one; otherwise as stored. What a cell stores is always the family name.
+pub(crate) fn font_label(lang: crate::i18n::Language, family: &str) -> String {
+    if gridcraft_engine::hostlock::HOST_BUILD {
+        crate::fonts::display_font_name(crate::theme::embedded_korean_names(), family, lang == crate::i18n::Language::Ko)
+    } else {
+        family.to_string()
+    }
+}
+
+/// The PPM build's font list (see [`crate::fonts::host_font_names`]), with `current` kept visible.
+pub(crate) fn host_font_names(lang: crate::i18n::Language, current: &str) -> Vec<String> {
+    crate::fonts::host_font_names(crate::theme::embedded_hangul_families(), &crate::fonts::uploaded_families(), current, &|n| font_label(lang, n))
 }
 
 pub const FONTS: &[&str] = &[
