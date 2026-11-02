@@ -391,7 +391,10 @@ pub fn host_font_names(hangul: &[String], uploaded: &[String], current: &str, la
             out.push(name);
         }
     }
-    if !current.trim().is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(current)) {
+    // Compared by the name shown too, so a document that stores 나눔고딕 doesn't add a second line
+    // next to NanumGothic in the Korean interface.
+    let shown = label(current);
+    if !current.trim().is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(current) || label(o).eq_ignore_ascii_case(&shown)) {
         out.insert(0, current.to_string());
     }
     out
@@ -701,6 +704,8 @@ mod tests {
         // Sorted by the name shown: in the Korean interface 나눔고딕 comes after the Latin Pretendard.
         let ko = |n: &str| if n == "NanumGothic" { "나눔고딕".to_string() } else { n.to_string() };
         assert_eq!(host_font_names(&hangul, &[], "", &ko), ["Pretendard", "NanumGothic"]);
+        // A document that stores the Korean name finds its line, not a second one.
+        assert_eq!(host_font_names(&hangul, &[], "나눔고딕", &ko), ["Pretendard", "NanumGothic"]);
     }
 
     #[test]

@@ -481,13 +481,13 @@ fn editable_combos_filter_by_typing_and_move_by_arrows() {
     events(&mut h, [Event::Text(typed.into())]);
     h.run_steps(3);
     // "arial" matches Arial only — Georgia must be filtered out of the list.
-    assert_eq!(h.query_all_by_label(hidden).count(), 0, "typing must narrow the list");
+    assert_eq!(h.query_all_by_label(hidden).count(), 0, "typing must narrow the list (the hidden font stays out)");
     assert!(h.query_all_by_label(landed).count() >= 1, "the match must stay visible");
     key(&mut h, Key::Enter);
     h.run_steps(3);
     assert!(h.state().message.is_none() && h.state().toast.is_none(), "applying must not raise an error");
     // The popup closed and the combo button now shows the applied font.
-    assert_eq!(h.query_all_by_label(landed).count(), 1, "Enter must apply Arial and close the popup");
+    assert_eq!(h.query_all_by_label(landed).count(), 1, "Enter must apply the match and close the popup");
     assert_eq!(h.query_all_by_label(hidden).count(), 0);
 
     // Arrows alone move through the full list: Calibri -> Cambria -> Candara -> Consolas.
@@ -500,7 +500,7 @@ fn editable_combos_filter_by_typing_and_move_by_arrows() {
     key(&mut h, Key::Enter);
     h.run_steps(3);
     assert!(h.state().message.is_none() && h.state().toast.is_none());
-    assert_eq!(h.query_all_by_label(third).count(), 1, "Down x3 from Calibri must land on Consolas");
+    assert_eq!(h.query_all_by_label(third).count(), 1, "Down x3 from Calibri must land on the third entry");
 
     // Size combo: type a custom size not in the list, Enter applies it.
     let mut h = harness(blank());
