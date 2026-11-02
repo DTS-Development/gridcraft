@@ -581,6 +581,40 @@ pub(crate) fn hangul_families<'a>(faces: impl IntoIterator<Item = (&'a str, &'a 
     out
 }
 
+/// `(English family, Korean family name)` for each of `faces` (`(family, file bytes)`) whose `name`
+/// table has a Korean family name (typographic, else legacy; language `ko`): 나눔고딕, 검은고딕…
+/// A family without one (Pretendard) is left out. The PPM font menu shows these in the Korean interface.
+pub(crate) fn korean_names<'a>(faces: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Vec<(String, String)> {
+    use skrifa::{MetadataProvider, string::StringId};
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (family, bytes) in faces {
+        let Ok(font) = skrifa::FontRef::new(bytes) else { continue };
+        let korean = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME].into_iter().find_map(|id| {
+            font.localized_strings(id).find(|s| s.language().is_some_and(|l| l.eq_ignore_ascii_case("ko") || l.to_ascii_lowercase().starts_with("ko-"))).map(|s| {
+                s.chars().take(128).collect::<String>().trim().to_string()
+            })
+        });
+        if let Some(ko) = korean.filter(|k| !k.is_empty() && !k.eq_ignore_ascii_case(family))
+            && !out.iter().any(|(e, _)| e.eq_ignore_ascii_case(family))
+        {
+            out.push((family.to_string(), ko));
+        }
+    }
+    out
+}
+
+/// [`korean_names`] of the embedded faces (empty without the embedded set).
+pub(crate) fn embedded_korean_names() -> &'static [(String, String)] {
+    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[cfg(target_arch = "wasm32")]
+        let korean = KOREAN_FONT.map(|b| ("NanumGothic", b));
+        #[cfg(not(target_arch = "wasm32"))]
+        let korean: Option<(&str, &[u8])> = None;
+        korean_names(OFFICE_FONTS.iter().map(|f| (f.0, f.2)).chain(korean))
+    })
+}
+
 /// The embedded families that draw Hangul: what the PPM build's font menu offers (empty without the
 /// embedded set).
 pub(crate) fn embedded_hangul_families() -> &'static [String] {
@@ -1032,6 +1066,16 @@ mod font_binding_tests {
         for (family, bytes) in &korean {
             assert!(font_parses(bytes, 0), "{family}");
         }
+        // The Korean names come from the files' name tables; a family without one stays English.
+        assert_eq!(
+            korean_names(korean.iter().copied()),
+            [
+                ("NanumGothic".to_string(), "나눔고딕".to_string()),
+                ("NanumMyeongjo".to_string(), "나눔명조".to_string()),
+                ("NanumGothicCoding".to_string(), "나눔고딕코딩".to_string()),
+                ("Black Han Sans".to_string(), "검은고딕".to_string()),
+            ]
+        );
         let latin: [(&str, &[u8]); 2] = [
             ("Carlito", font!("carlito/Carlito-Regular.ttf")),
             ("Liberation Sans", font!("liberation-sans/LiberationSans-Regular.ttf")),

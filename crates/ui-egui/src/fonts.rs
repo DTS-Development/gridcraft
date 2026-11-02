@@ -336,8 +336,8 @@ pub fn office_family(name: &str) -> &'static str {
         "inter" => "Inter",
         "바탕" | "batang" | "궁서" | "gungsuh" | "함초롬바탕" | "hcr batang" | "나눔명조" | "nanummyeongjo" | "hy신명조" | "hysinmyeongjo-medium" | "hy견명조"
         | "hymyeongjo-extra" | "한컴바탕" => "NanumMyeongjo",
-        "굴림체" | "gulimche" | "돋움체" | "dotumche" | "바탕체" | "batangche" | "궁서체" | "gungsuhche" | "nanumgothiccoding" => "NanumGothicCoding",
-        "hy헤드라인m" | "hyheadline-medium" | "hy견고딕" | "hygothic-extra" | "black han sans" => "Black Han Sans",
+        "굴림체" | "gulimche" | "돋움체" | "dotumche" | "바탕체" | "batangche" | "궁서체" | "gungsuhche" | "nanumgothiccoding" | "나눔고딕코딩" => "NanumGothicCoding",
+        "hy헤드라인m" | "hyheadline-medium" | "hy견고딕" | "hygothic-extra" | "black han sans" | "검은고딕" => "Black Han Sans",
         "pretendard" => "Pretendard",
         "맑은 고딕"
         | "malgun gothic"
@@ -364,6 +364,15 @@ pub fn office_family(name: &str) -> &'static str {
 /// Is `family` (an [`office_family`] answer) one of the embedded Korean faces?
 pub fn is_korean_family(family: &str) -> bool {
     matches!(family, "NanumGothic" | "NanumMyeongjo" | "NanumGothicCoding" | "Black Han Sans" | "Pretendard")
+}
+
+/// How a font family is shown: its Korean name from `names` (`(English, Korean)`) when the
+/// interface is Korean and the font has one, else the family as stored. The stored name never changes.
+pub fn display_font_name(names: &[(String, String)], family: &str, korean_ui: bool) -> String {
+    if !korean_ui {
+        return family.to_string();
+    }
+    names.iter().find(|(e, _)| e.eq_ignore_ascii_case(family)).map_or_else(|| family.to_string(), |(_, k)| k.clone())
 }
 
 /// The font list of the PPM build (`ppm-host`): only the embedded families whose file draws Hangul
@@ -683,5 +692,18 @@ mod tests {
         assert_eq!(host_font_names(&hangul, &[], "Calibri"), ["Calibri", "NanumGothic", "Pretendard"]);
         assert_eq!(host_font_names(&hangul, &[], " "), ["NanumGothic", "Pretendard"]);
         assert!(host_font_names(&[], &[], "").is_empty());
+    }
+
+    #[test]
+    fn the_host_menu_shows_korean_names_only_in_the_korean_interface() {
+        let names = [("NanumGothic".to_string(), "나눔고딕".to_string())];
+        assert_eq!(display_font_name(&names, "nanumgothic", true), "나눔고딕");
+        assert_eq!(display_font_name(&names, "NanumGothic", false), "NanumGothic");
+        assert_eq!(display_font_name(&names, "Pretendard", true), "Pretendard");
+        // The Korean names also name the font in a document.
+        assert_eq!(office_family("나눔고딕코딩"), "NanumGothicCoding");
+        assert_eq!(office_family("검은고딕"), "Black Han Sans");
+        assert_eq!(office_family("나눔고딕"), "NanumGothic");
+        assert_eq!(office_family("나눔명조"), "NanumMyeongjo");
     }
 }
