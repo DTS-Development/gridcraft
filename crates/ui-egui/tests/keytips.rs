@@ -459,21 +459,36 @@ fn control_keytips_open_dropdowns_and_run_handlers() {
 
 #[test]
 fn editable_combos_filter_by_typing_and_move_by_arrows() {
+    // The PPM build lists only Hangul fonts and uploaded ones (Arial, Georgia... are hidden, and the
+    // native test build embeds no Hangul font), so it runs the same steps on four uploaded fonts:
+    // the list is Calibri (current), Alpha Sans, Beta Sans, Delta Sans, Gamma Sans.
+    let host = gridcraft_engine::hostlock::HOST_BUILD;
+    if host {
+        let face = include_bytes!("../../../ppm/fonts-ko/fonts/nanum-gothic/NanumGothic-Regular.ttf");
+        for family in ["Alpha Sans", "Beta Sans", "Gamma Sans", "Delta Sans"] {
+            gridcraft_ui_egui::fonts::add_uploaded(family, face.to_vec()).unwrap();
+        }
+    }
+    let (typed, hidden, landed, third, other) = if host {
+        ("gamma", "Alpha Sans", "Gamma Sans", "Delta Sans", "Beta Sans")
+    } else {
+        ("arial", "Georgia", "Arial", "Consolas", "Candara")
+    };
     // Open the font dropdown (HFF), type to filter, then Enter to apply.
     let mut h = harness(blank());
     sequence(&mut h, &[Key::H, Key::F, Key::F], false);
     h.run_steps(3); // let the filter field gain focus
-    events(&mut h, [Event::Text("arial".into())]);
+    events(&mut h, [Event::Text(typed.into())]);
     h.run_steps(3);
     // "arial" matches Arial only — Georgia must be filtered out of the list.
-    assert_eq!(h.query_all_by_label("Georgia").count(), 0, "typing must narrow the list");
-    assert!(h.query_all_by_label("Arial").count() >= 1, "the match must stay visible");
+    assert_eq!(h.query_all_by_label(hidden).count(), 0, "typing must narrow the list");
+    assert!(h.query_all_by_label(landed).count() >= 1, "the match must stay visible");
     key(&mut h, Key::Enter);
     h.run_steps(3);
     assert!(h.state().message.is_none() && h.state().toast.is_none(), "applying must not raise an error");
     // The popup closed and the combo button now shows the applied font.
-    assert_eq!(h.query_all_by_label("Arial").count(), 1, "Enter must apply Arial and close the popup");
-    assert_eq!(h.query_all_by_label("Georgia").count(), 0);
+    assert_eq!(h.query_all_by_label(landed).count(), 1, "Enter must apply Arial and close the popup");
+    assert_eq!(h.query_all_by_label(hidden).count(), 0);
 
     // Arrows alone move through the full list: Calibri -> Cambria -> Candara -> Consolas.
     let mut h = harness(blank());
@@ -485,7 +500,7 @@ fn editable_combos_filter_by_typing_and_move_by_arrows() {
     key(&mut h, Key::Enter);
     h.run_steps(3);
     assert!(h.state().message.is_none() && h.state().toast.is_none());
-    assert_eq!(h.query_all_by_label("Consolas").count(), 1, "Down x3 from Calibri must land on Consolas");
+    assert_eq!(h.query_all_by_label(third).count(), 1, "Down x3 from Calibri must land on Consolas");
 
     // Size combo: type a custom size not in the list, Enter applies it.
     let mut h = harness(blank());
@@ -501,24 +516,24 @@ fn editable_combos_filter_by_typing_and_move_by_arrows() {
     let mut h = harness(blank());
     sequence(&mut h, &[Key::H, Key::F, Key::F], false);
     h.run_steps(3);
-    events(&mut h, [Event::Text("arial".into())]);
+    events(&mut h, [Event::Text(typed.into())]);
     h.run_steps(3);
     key(&mut h, Key::Escape);
     h.run_steps(3);
     sequence(&mut h, &[Key::H, Key::F, Key::F], false);
     h.run_steps(4);
-    assert!(h.query_all_by_label("Georgia").count() >= 1, "reopening must show the full, unfiltered list");
+    assert!(h.query_all_by_label(hidden).count() >= 1, "reopening must show the full, unfiltered list");
     // Arrows after typing move the highlight, not the text cursor: type a filter,
     // then Down twice and Enter must apply the second match's neighbour logic.
     key(&mut h, Key::Escape);
     h.run_steps(3);
     sequence(&mut h, &[Key::H, Key::F, Key::F], false);
     h.run_steps(3);
-    events(&mut h, [Event::Text("candara".into())]);
+    events(&mut h, [Event::Text(other.to_lowercase().into())]);
     h.run_steps(3);
     key(&mut h, Key::Enter);
     h.run_steps(3);
-    assert_eq!(h.query_all_by_label("Candara").count(), 1, "filtered Enter must apply the filtered row");
+    assert_eq!(h.query_all_by_label(other).count(), 1, "filtered Enter must apply the filtered row");
 }
 
 #[test]
