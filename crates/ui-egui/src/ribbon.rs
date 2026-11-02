@@ -1099,7 +1099,7 @@ fn font_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let resp = ui.add_sized([150.0, 24.0], egui::Button::new(egui::RichText::new(&name).font(theme::ui_font(12.5))));
     control_keytip(app, ui, &resp, "home.fontName");
     let forced = invoke(app, "home.fontName");
-    let names = font_names();
+    let names = if gridcraft_engine::hostlock::HOST_BUILD { host_font_names(&name) } else { font_names() };
     let items: Vec<(&str, String)> = names.iter().map(|n| (n.as_str(), n.clone())).collect();
     if let ComboResult::Picked(value) = editable_combo(ui, &resp, "font", &name, &items, forced) {
         act(app, "home.fontName", json!({"name": value}));
@@ -1111,6 +1111,11 @@ fn font_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
 pub(crate) fn font_names() -> Vec<String> {
     let uploaded = crate::fonts::uploaded_families();
     FONTS.iter().map(|f| f.to_string()).chain(uploaded.into_iter().filter(|u| !FONTS.iter().any(|f| f.eq_ignore_ascii_case(u)))).collect()
+}
+
+/// The PPM build's font list (see [`crate::fonts::host_font_names`]), with `current` kept visible.
+pub(crate) fn host_font_names(current: &str) -> Vec<String> {
+    crate::fonts::host_font_names(crate::theme::embedded_hangul_families(), &crate::fonts::uploaded_families(), current)
 }
 
 pub const FONTS: &[&str] = &[

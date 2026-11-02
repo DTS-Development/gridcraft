@@ -321,7 +321,10 @@ pub fn office_role_key(family: &str, bold: bool, italic: bool) -> String {
 /// (the same one the viewer and the render worker use): Calibri, Aptos and Segoe UI give Carlito;
 /// Cambria, Constantia, Palatino (Linotype), Book Antiqua, Georgia and Garamond give Caladea; Arial, Arial Narrow, Helvetica and Helvetica Neue give Liberation Sans; Times and Times
 /// New Roman give Liberation Serif; Courier, Courier New, Consolas and Lucida Console give Liberation Mono; the
-/// Korean document names give NanumGothic; Inter gives Inter (not embedded here: the caller falls
+/// Korean document names give NanumGothic (gothic), NanumMyeongjo (Batang, Gungsuh, Myeongjo),
+/// NanumGothicCoding (the fixed-width Gulim/Dotum/Batang/Gungsuh "che" names) or Black Han Sans
+/// (the HY headline names); NanumGothic, NanumMyeongjo, NanumGothicCoding, Black Han Sans and
+/// Pretendard give themselves; Inter gives Inter (not embedded here: the caller falls
 /// back to Carlito). Every other name gives Carlito, and Hangul in any of them falls back to
 /// NanumGothic.
 pub fn office_family(name: &str) -> &'static str {
@@ -331,40 +334,53 @@ pub fn office_family(name: &str) -> &'static str {
         "times" | "times new roman" => "Liberation Serif",
         "courier" | "courier new" | "consolas" | "lucida console" => "Liberation Mono",
         "inter" => "Inter",
+        "바탕" | "batang" | "궁서" | "gungsuh" | "함초롬바탕" | "hcr batang" | "나눔명조" | "nanummyeongjo" | "hy신명조" | "hysinmyeongjo-medium" | "hy견명조"
+        | "hymyeongjo-extra" | "한컴바탕" => "NanumMyeongjo",
+        "굴림체" | "gulimche" | "돋움체" | "dotumche" | "바탕체" | "batangche" | "궁서체" | "gungsuhche" | "nanumgothiccoding" => "NanumGothicCoding",
+        "hy헤드라인m" | "hyheadline-medium" | "hy견고딕" | "hygothic-extra" | "black han sans" => "Black Han Sans",
+        "pretendard" => "Pretendard",
         "맑은 고딕"
         | "malgun gothic"
         | "굴림"
         | "gulim"
-        | "굴림체"
-        | "gulimche"
         | "새굴림"
         | "new gulim"
         | "돋움"
         | "dotum"
-        | "돋움체"
-        | "dotumche"
-        | "바탕"
-        | "batang"
-        | "바탕체"
-        | "batangche"
-        | "궁서"
-        | "gungsuh"
-        | "궁서체"
-        | "gungsuhche"
-        | "함초롬바탕"
-        | "hcr batang"
         | "함초롬돋움"
         | "hcr dotum"
         | "나눔고딕"
         | "nanumgothic"
-        | "나눔명조"
-        | "nanummyeongjo"
+        | "hy중고딕"
+        | "hygothic-medium"
         | "noto sans kr"
         | "noto sans cjk kr"
         | "noto serif kr"
         | "apple sd gothic neo" => "NanumGothic",
         _ => "Carlito",
     }
+}
+
+/// Is `family` (an [`office_family`] answer) one of the embedded Korean faces?
+pub fn is_korean_family(family: &str) -> bool {
+    matches!(family, "NanumGothic" | "NanumMyeongjo" | "NanumGothicCoding" | "Black Han Sans" | "Pretendard")
+}
+
+/// The font list of the PPM build (`ppm-host`): only the embedded families whose file draws Hangul
+/// (`hangul`, A–Z), then the fonts the host uploaded, then `current` when it isn't among them, so
+/// the selection stays visible. The English-only Office names (Calibri, Arial, Aptos…) are not
+/// offered; documents that use them still draw.
+pub fn host_font_names(hangul: &[String], uploaded: &[String], current: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in hangul.iter().chain(uploaded) {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(name)) {
+            out.push(name.clone());
+        }
+    }
+    if !current.trim().is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(current)) {
+        out.insert(0, current.to_string());
+    }
+    out
 }
 
 /// Bind one embedded family's faces (`(style, bytes)`: Regular, Bold, Italic, Bold Italic) into
@@ -656,5 +672,16 @@ mod tests {
         assert!(add_uploaded("calibri", epaint_default_fonts::UBUNTU_LIGHT.to_vec()).is_ok());
         let names = crate::ribbon::font_names();
         assert_eq!(names.iter().filter(|f| f.eq_ignore_ascii_case("calibri")).count(), 1, "no second Calibri");
+    }
+
+    #[test]
+    fn the_host_font_menu_lists_hangul_families_uploads_and_the_current_font() {
+        let hangul = ["NanumGothic".to_string(), "Pretendard".to_string()];
+        let uploaded = ["Company Sans".to_string(), "pretendard".to_string()];
+        assert_eq!(host_font_names(&hangul, &uploaded, "NanumGothic"), ["NanumGothic", "Pretendard", "Company Sans"]);
+        // The selection stays visible even when it is an English-only name; Calibri etc. are not offered.
+        assert_eq!(host_font_names(&hangul, &[], "Calibri"), ["Calibri", "NanumGothic", "Pretendard"]);
+        assert_eq!(host_font_names(&hangul, &[], " "), ["NanumGothic", "Pretendard"]);
+        assert!(host_font_names(&[], &[], "").is_empty());
     }
 }

@@ -1665,7 +1665,8 @@ fn format_cells(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: 
         }
         "Font" => {
             egui::ComboBox::from_label(lang.tr("Font")).selected_text(st.font.name.clone()).show_ui(ui, |ui| {
-                for f in crate::fonts::families() {
+                let names = if gridcraft_engine::hostlock::HOST_BUILD { crate::ribbon::host_font_names(&st.font.name) } else { crate::fonts::families() };
+                for f in names {
                     ui.selectable_value(&mut st.font.name, f.clone(), f.clone());
                 }
             });
