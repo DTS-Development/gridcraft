@@ -376,14 +376,19 @@ pub fn display_font_name(names: &[(String, String)], family: &str, korean_ui: bo
 }
 
 /// The font list of the PPM build (`ppm-host`): only the embedded families whose file draws Hangul
-/// (`hangul`, A–Z), then the fonts the host uploaded, then `current` when it isn't among them, so
-/// the selection stays visible. The English-only Office names (Calibri, Arial, Aptos…) are not
-/// offered; documents that use them still draw.
-pub fn host_font_names(hangul: &[String], uploaded: &[String], current: &str) -> Vec<String> {
+/// (`hangul`), then the fonts the host uploaded, each part sorted A–Z by the name shown (`label`),
+/// then `current` on top when it isn't among them, so the selection stays visible. The English-only
+/// Office names (Calibri, Arial, Aptos…) are not offered; documents that use them still draw.
+pub fn host_font_names(hangul: &[String], uploaded: &[String], current: &str, label: &dyn Fn(&str) -> String) -> Vec<String> {
+    let sorted = |names: &[String]| {
+        let mut v = names.to_vec();
+        v.sort_by_key(|n| label(n).to_lowercase());
+        v
+    };
     let mut out: Vec<String> = Vec::new();
-    for name in hangul.iter().chain(uploaded) {
-        if !out.iter().any(|o| o.eq_ignore_ascii_case(name)) {
-            out.push(name.clone());
+    for name in sorted(hangul).into_iter().chain(sorted(uploaded)) {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(&name)) {
+            out.push(name);
         }
     }
     if !current.trim().is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(current)) {
@@ -685,13 +690,17 @@ mod tests {
 
     #[test]
     fn the_host_font_menu_lists_hangul_families_uploads_and_the_current_font() {
-        let hangul = ["NanumGothic".to_string(), "Pretendard".to_string()];
-        let uploaded = ["Company Sans".to_string(), "pretendard".to_string()];
-        assert_eq!(host_font_names(&hangul, &uploaded, "NanumGothic"), ["NanumGothic", "Pretendard", "Company Sans"]);
+        let same = |n: &str| n.to_string();
+        let hangul = ["Pretendard".to_string(), "NanumGothic".to_string()];
+        let uploaded = ["Zed Sans".to_string(), "Company Sans".to_string(), "pretendard".to_string()];
+        assert_eq!(host_font_names(&hangul, &uploaded, "NanumGothic", &same), ["NanumGothic", "Pretendard", "Company Sans", "Zed Sans"]);
         // The selection stays visible even when it is an English-only name; Calibri etc. are not offered.
-        assert_eq!(host_font_names(&hangul, &[], "Calibri"), ["Calibri", "NanumGothic", "Pretendard"]);
-        assert_eq!(host_font_names(&hangul, &[], " "), ["NanumGothic", "Pretendard"]);
-        assert!(host_font_names(&[], &[], "").is_empty());
+        assert_eq!(host_font_names(&hangul, &[], "Calibri", &same), ["Calibri", "NanumGothic", "Pretendard"]);
+        assert_eq!(host_font_names(&hangul, &[], " ", &same), ["NanumGothic", "Pretendard"]);
+        assert!(host_font_names(&[], &[], "", &same).is_empty());
+        // Sorted by the name shown: in the Korean interface 나눔고딕 comes after the Latin Pretendard.
+        let ko = |n: &str| if n == "NanumGothic" { "나눔고딕".to_string() } else { n.to_string() };
+        assert_eq!(host_font_names(&hangul, &[], "", &ko), ["Pretendard", "NanumGothic"]);
     }
 
     #[test]
