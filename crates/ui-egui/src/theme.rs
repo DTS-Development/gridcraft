@@ -214,6 +214,13 @@ fn resolve_cell_family(name: &str, bold: bool, italic: bool) -> FontFamily {
     if crate::fonts::is_bound(&office) {
         return FontFamily::Name(office.into());
     }
+    // A Korean face that isn't bound falls to NanumGothic, which draws Hangul.
+    if family != "NanumGothic" && crate::fonts::is_korean_family(family) {
+        let gothic = crate::fonts::office_role_key("NanumGothic", bold, italic);
+        if crate::fonts::is_bound(&gothic) {
+            return FontFamily::Name(gothic.into());
+        }
+    }
     let lower = name.to_ascii_lowercase();
     if lower.contains("courier") || lower.contains("mono") || lower.contains("consolas") {
         return FontFamily::Name(MONO.into());
@@ -523,26 +530,102 @@ fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<String> {
 include!(concat!(env!("OUT_DIR"), "/office_fonts.rs"));
 
 /// Binds the embedded Office-compatible families as cell fonts (see [`crate::fonts::office_family`]),
-/// plus NanumGothic from the Korean fallback face, and returns their role keys. Nothing without
-/// the embedded set.
+/// plus NanumGothic from the Korean fallback face (and the embedded Bold), and returns their role
+/// keys. Nothing without the embedded set.
 fn bind_office(fonts: &mut FontDefinitions, base: &[String], base_mono: &[String], fallback: &[String]) -> Vec<String> {
     let mut bound = Vec::new();
     for family in OFFICE_FAMILIES.iter().copied() {
         let faces: Vec<(&str, &'static [u8])> = OFFICE_FONTS.iter().filter(|f| f.0 == family).map(|f| (f.1, f.2)).collect();
-        // The monospaced family falls back to egui's monospaced defaults, the others to the proportional ones.
-        let base = if family == "Liberation Mono" { base_mono } else { base };
+        // The monospaced families fall back to egui's monospaced defaults, the others to the proportional ones.
+        let base = if matches!(family, "Liberation Mono" | "NanumGothicCoding") { base_mono } else { base };
         bound.extend(crate::fonts::bind_embedded(fonts, family, &faces, base, fallback));
     }
-    // The Korean face is already in `fonts` (the fallback), so it is bound by key, not embedded twice.
-    if let Some(korean) = fallback.iter().find(|k| *k == "web-korean") {
-        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
-            let role = crate::fonts::office_role_key("NanumGothic", bold, italic);
-            let chain: Vec<String> = std::iter::once(korean.clone()).chain(base.iter().cloned()).collect();
-            fonts.families.insert(FontFamily::Name(role.clone().into()), chain);
-            bound.push(role);
-        }
+    let bold = OFFICE_FONTS.iter().find(|f| (f.0, f.1) == ("NanumGothic", "Bold")).map(|f| f.2);
+    bound.extend(bind_nanum_gothic(fonts, base, fallback, bold));
+    bound
+}
+
+/// NanumGothic's four roles. The Regular face is already in `fonts` (the Korean fallback), so it is
+/// bound by key, not embedded twice; `bold` (the embedded Bold face) serves the bold roles, which
+/// otherwise use the Regular too.
+fn bind_nanum_gothic(fonts: &mut FontDefinitions, base: &[String], fallback: &[String], bold: Option<&'static [u8]>) -> Vec<String> {
+    let mut bound = Vec::new();
+    let Some(korean) = fallback.iter().find(|k| *k == "web-korean") else { return bound };
+    let bold_key = bold.map(|bytes| {
+        let key = "office-src:NanumGothic:Bold".to_string();
+        fonts.font_data.entry(key.clone()).or_insert_with(|| Arc::new(FontData::from_static(bytes)));
+        key
+    });
+    for (is_bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+        let role = crate::fonts::office_role_key("NanumGothic", is_bold, italic);
+        let face = if is_bold { bold_key.as_ref().unwrap_or(korean) } else { korean };
+        let chain: Vec<String> = std::iter::once(face.clone()).chain(base.iter().cloned()).collect();
+        fonts.families.insert(FontFamily::Name(role.clone().into()), chain);
+        bound.push(role);
     }
     bound
+}
+
+/// The families among `faces` (`(family, file bytes)`) with at least one face that draws Hangul
+/// (U+AC00 in the file's cmap), sorted A–Z without regard to case. The PPM font menu lists these.
+pub(crate) fn hangul_families<'a>(faces: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Vec<String> {
+    use skrifa::MetadataProvider;
+    let mut out: Vec<String> = Vec::new();
+    for (family, bytes) in faces {
+        let draws = skrifa::FontRef::new(bytes).is_ok_and(|f| f.charmap().map('\u{AC00}').is_some());
+        if draws && !out.iter().any(|o| o.eq_ignore_ascii_case(family)) {
+            out.push(family.to_string());
+        }
+    }
+    out.sort_by_key(|a| a.to_lowercase());
+    out
+}
+
+/// `(English family, Korean family name)` for each of `faces` (`(family, file bytes)`) whose `name`
+/// table has a Korean family name (typographic, else legacy; language `ko`): 나눔고딕, 검은고딕…
+/// A family without one (Pretendard) is left out. The PPM font menu shows these in the Korean interface.
+pub(crate) fn korean_names<'a>(faces: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Vec<(String, String)> {
+    use skrifa::{MetadataProvider, string::StringId};
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (family, bytes) in faces {
+        let Ok(font) = skrifa::FontRef::new(bytes) else { continue };
+        let korean = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME].into_iter().find_map(|id| {
+            font.localized_strings(id).find(|s| s.language().is_some_and(|l| l.eq_ignore_ascii_case("ko") || l.to_ascii_lowercase().starts_with("ko-"))).map(|s| {
+                s.chars().take(128).collect::<String>().trim().to_string()
+            })
+        });
+        if let Some(ko) = korean.filter(|k| !k.is_empty() && !k.eq_ignore_ascii_case(family))
+            && !out.iter().any(|(e, _)| e.eq_ignore_ascii_case(family))
+        {
+            out.push((family.to_string(), ko));
+        }
+    }
+    out
+}
+
+/// [`korean_names`] of the embedded faces (empty without the embedded set).
+pub(crate) fn embedded_korean_names() -> &'static [(String, String)] {
+    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[cfg(target_arch = "wasm32")]
+        let korean = KOREAN_FONT.map(|b| ("NanumGothic", b));
+        #[cfg(not(target_arch = "wasm32"))]
+        let korean: Option<(&str, &[u8])> = None;
+        korean_names(OFFICE_FONTS.iter().map(|f| (f.0, f.2)).chain(korean))
+    })
+}
+
+/// The embedded families that draw Hangul: what the PPM build's font menu offers (empty without the
+/// embedded set).
+pub(crate) fn embedded_hangul_families() -> &'static [String] {
+    static CACHE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[cfg(target_arch = "wasm32")]
+        let korean = KOREAN_FONT.map(|b| ("NanumGothic", b));
+        #[cfg(not(target_arch = "wasm32"))]
+        let korean: Option<(&str, &[u8])> = None;
+        hangul_families(OFFICE_FONTS.iter().map(|f| (f.0, f.2)).chain(korean))
+    })
 }
 
 /// The Korean face a web build embeds (see `build.rs`); `None` without `CRAFT_FONTS_DIR`.
@@ -890,30 +973,16 @@ mod font_binding_tests {
             "Malgun Gothic",
             "굴림",
             "Gulim",
-            "굴림체",
-            "GulimChe",
             "새굴림",
             "New Gulim",
             "돋움",
             "Dotum",
-            "돋움체",
-            "DotumChe",
-            "바탕",
-            "Batang",
-            "바탕체",
-            "BatangChe",
-            "궁서",
-            "Gungsuh",
-            "궁서체",
-            "GungsuhChe",
-            "함초롬바탕",
-            "HCR Batang",
             "함초롬돋움",
             "HCR Dotum",
             "나눔고딕",
             "NanumGothic",
-            "나눔명조",
-            "NanumMyeongjo",
+            "HY중고딕",
+            "HYGothic-Medium",
             "Noto Sans KR",
             "Noto Sans CJK KR",
             "Noto Serif KR",
@@ -921,6 +990,112 @@ mod font_binding_tests {
         ] {
             assert_eq!(office_family(name), "NanumGothic", "{name}");
         }
+        for name in [
+            "바탕",
+            "Batang",
+            "궁서",
+            "Gungsuh",
+            "함초롬바탕",
+            "HCR Batang",
+            "나눔명조",
+            "NanumMyeongjo",
+            "HY신명조",
+            "HYSinMyeongJo-Medium",
+            "HY견명조",
+            "HYMyeongJo-Extra",
+            "한컴바탕",
+        ] {
+            assert_eq!(office_family(name), "NanumMyeongjo", "{name}");
+        }
+        for name in ["굴림체", "GulimChe", "돋움체", "DotumChe", "바탕체", "BatangChe", "궁서체", "GungsuhChe", "NanumGothicCoding"] {
+            assert_eq!(office_family(name), "NanumGothicCoding", "{name}");
+        }
+        for name in ["HY헤드라인M", "HYHeadLine-Medium", "HY견고딕", "HYGothic-Extra", "Black Han Sans"] {
+            assert_eq!(office_family(name), "Black Han Sans", "{name}");
+        }
+        assert_eq!(office_family("Pretendard"), "Pretendard");
+    }
+
+    /// NanumGothic's bold roles use the embedded Bold face, the regular and italic roles the
+    /// Korean fallback face; without a Bold the bold roles use the fallback too.
+    #[test]
+    fn nanum_gothic_bold_roles_use_the_embedded_bold() {
+        const REGULAR: &[u8] = include_bytes!("../../../ppm/fonts-ko/fonts/nanum-gothic/NanumGothic-Regular.ttf");
+        const BOLD: &[u8] = include_bytes!("../../../ppm/fonts-ko/fonts/nanum-gothic/NanumGothic-Bold.ttf");
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data.insert("web-korean".into(), Arc::new(FontData::from_static(REGULAR)));
+        let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        let fallback = vec!["web-korean".to_string()];
+        let roles = bind_nanum_gothic(&mut fonts, &base, &fallback, Some(BOLD));
+        assert_eq!(roles.len(), 4);
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let chain = &fonts.families[&FontFamily::Name(crate::fonts::office_role_key("NanumGothic", bold, italic).into())];
+            let want = if bold { "office-src:NanumGothic:Bold" } else { "web-korean" };
+            assert_eq!(chain.first().map(String::as_str), Some(want), "bold {bold} italic {italic}");
+            assert!(chain.iter().all(|k| fonts.font_data.contains_key(k)));
+        }
+        let plain = bind_nanum_gothic(&mut FontDefinitions::default(), &base, &[], Some(BOLD));
+        assert!(plain.is_empty(), "without the fallback face nothing is bound");
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data.insert("web-korean".into(), Arc::new(FontData::from_static(REGULAR)));
+        bind_nanum_gothic(&mut fonts, &base, &fallback, None);
+        let chain = &fonts.families[&FontFamily::Name(crate::fonts::office_role_key("NanumGothic", true, false).into())];
+        assert_eq!(chain.first().map(String::as_str), Some("web-korean"));
+    }
+
+    /// Every embedded Korean face (Pretendard's are CFF OpenType) parses for epaint and maps Hangul,
+    /// and the menu's judge keeps exactly the Hangul ones: the Latin Office twins draw no `가`.
+    #[test]
+    fn the_korean_set_parses_and_the_menu_judges_by_the_cmap() {
+        macro_rules! font {
+            ($f:literal) => {
+                include_bytes!(concat!("../../../ppm/fonts-ko/fonts/", $f))
+            };
+        }
+        let korean: [(&str, &[u8]); 9] = [
+            ("NanumGothic", font!("nanum-gothic/NanumGothic-Bold.ttf")),
+            ("NanumMyeongjo", font!("nanum-myeongjo/NanumMyeongjo-Regular.ttf")),
+            ("NanumMyeongjo", font!("nanum-myeongjo/NanumMyeongjo-Bold.ttf")),
+            ("NanumGothicCoding", font!("nanum-gothic-coding/NanumGothicCoding-Regular.ttf")),
+            ("NanumGothicCoding", font!("nanum-gothic-coding/NanumGothicCoding-Bold.ttf")),
+            ("Black Han Sans", font!("black-han-sans/BlackHanSans-Regular.ttf")),
+            ("Pretendard", font!("pretendard/Pretendard-Regular.otf")),
+            ("Pretendard", font!("pretendard/Pretendard-Bold.otf")),
+            ("pretendard", font!("pretendard/Pretendard-Bold.otf")),
+        ];
+        for (family, bytes) in &korean {
+            assert!(font_parses(bytes, 0), "{family}");
+        }
+        // The Korean names come from the files' name tables; a family without one stays English.
+        assert_eq!(
+            korean_names(korean.iter().copied()),
+            [
+                ("NanumGothic".to_string(), "나눔고딕".to_string()),
+                ("NanumMyeongjo".to_string(), "나눔명조".to_string()),
+                ("NanumGothicCoding".to_string(), "나눔고딕코딩".to_string()),
+                ("Black Han Sans".to_string(), "검은고딕".to_string()),
+            ]
+        );
+        let latin: [(&str, &[u8]); 2] = [
+            ("Carlito", font!("carlito/Carlito-Regular.ttf")),
+            ("Liberation Sans", font!("liberation-sans/LiberationSans-Regular.ttf")),
+        ];
+        let all = latin.iter().chain(korean.iter()).copied();
+        assert_eq!(hangul_families(all), ["Black Han Sans", "NanumGothic", "NanumGothicCoding", "NanumMyeongjo", "Pretendard"]);
+        // Without the embedded set (native tests) the menu has no embedded Korean families.
+        assert!(embedded_hangul_families().is_empty());
+    }
+
+    /// A Korean family that isn't bound draws in NanumGothic when that is bound, never in a Latin role.
+    #[test]
+    fn an_unbound_korean_face_falls_to_nanum_gothic() {
+        let _g = crate::fonts::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let gothic = crate::fonts::office_role_key("NanumGothic", false, false);
+        crate::fonts::set_bound(always_bound().into_iter().chain([gothic.clone()]));
+        for name in ["바탕", "굴림체", "HY헤드라인M", "Pretendard"] {
+            assert!(matches!(cell_family(name, false, false), FontFamily::Name(f) if *f == *gothic), "{name}");
+        }
+        crate::fonts::set_bound(always_bound());
     }
 
     /// Without the embedded set a bound NanumGothic (the Korean fallback face) is the only office

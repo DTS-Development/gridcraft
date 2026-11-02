@@ -32,6 +32,11 @@
 //!   [`crate::gate::MAX_FONTS_PER_MESSAGE`] fonts count, each up to [`crate::gate::MAX_FONT_BYTES`], and
 //!   [`crate::gate::MAX_FONTS_TOTAL_BYTES`] together; a family already added (any case) is kept once.
 //! - `gridcraft:fonts-added` (to the parent): `{ id, installed, failed }`, the family names.
+//! - `gridcraft:goto` (from the parent): `{ id, location }`, `location` `{ kind: 'xlsx', sheet, cell }`: the
+//!   sheet becomes the active one, `cell` (an A1 reference) is selected and scrolled into view.
+//! - `gridcraft:goto-done` (to the parent): `{ id }`; or `gridcraft:goto-failed`: `{ id, reason }`, `reason`
+//!   `not-found` (no such sheet or cell, or no workbook open yet), `unsupported` (another `kind`) or `error` (a malformed or too long `sheet`/`cell`, or
+//!   more than [`crate::gate::MAX_PENDING_GOTOS`] requests waiting: the oldest is answered and dropped).
 //!
 //! Ctrl/Cmd+S inside the frame is GridCraft's Save (a `gridcraft:save`); the browser's own "save
 //! page" never opens (see [`Bridge::listen`]).
@@ -69,6 +74,8 @@ pub struct Bridge {
     opened: Rc<Cell<bool>>,
     /// `gridcraft:request-bytes` requests (id, purpose) the next frame answers.
     byte_requests: Rc<RefCell<Vec<(String, &'static str)>>>,
+    /// `gridcraft:goto` requests (id, sheet and cell, or the failure to answer with) the next frame carries out.
+    gotos: Rc<RefCell<Vec<(String, Result<(String, String), &'static str>)>>>,
     /// Ids of `gridcraft:export` requests the next frame answers.
     #[cfg(feature = "ppm-host")]
     exports: Rc<RefCell<Vec<String>>>,
@@ -102,6 +109,7 @@ impl Bridge {
             policy: Rc::default(),
             opened: Rc::default(),
             byte_requests: Rc::default(),
+            gotos: Rc::default(),
             #[cfg(feature = "ppm-host")]
             exports: Rc::default(),
             #[cfg(feature = "ppm-host")]
@@ -175,6 +183,21 @@ impl Bridge {
         let dirty = app.session.documents().iter().any(|d| d.is_dirty());
         if self.reported.get() != Some(dirty) && self.send(&[("type", "gridcraft:dirty".into()), ("dirty", dirty.into())]) {
             self.reported.set(Some(dirty));
+        }
+    }
+
+    /// Before the frame draws: carries out the pending `gridcraft:goto` requests, so the grid scrolls in this very frame.
+    pub fn apply_gotos(&self, app: &mut SheetApp) {
+        let gotos = std::mem::take(&mut *self.gotos.borrow_mut());
+        for (id, target) in gotos {
+            let result = target.and_then(|(sheet, cell)| crate::gate::goto_xlsx(app, &sheet, &cell));
+            let sent = match result {
+                Ok(()) => self.send(&[("type", "gridcraft:goto-done".into()), ("id", id.as_str().into())]),
+                Err(reason) => self.send(&[("type", "gridcraft:goto-failed".into()), ("id", id.as_str().into()), ("reason", reason.into())]),
+            };
+            if !sent {
+                log::error!("couldn't answer the goto request {id}");
+            }
         }
     }
 
@@ -279,6 +302,7 @@ impl Bridge {
         let policy = self.policy.clone();
         let opened = self.opened.clone();
         let byte_requests = self.byte_requests.clone();
+        let gotos = self.gotos.clone();
         #[cfg(feature = "ppm-host")]
         let exports = self.exports.clone();
         #[cfg(feature = "ppm-host")]
@@ -323,6 +347,24 @@ impl Bridge {
                                 }
                             }
                         }
+                    }
+                    return;
+                }
+                Some("gridcraft:goto") => {
+                    if let Some(id) = string(&data, "id").and_then(|id| crate::gate::export_id(&id)) {
+                        // Full: the oldest waiting request is answered `error` and dropped.
+                        let dropped = {
+                            let mut queue = gotos.borrow_mut();
+                            let dropped = (queue.len() >= crate::gate::MAX_PENDING_GOTOS).then(|| queue.remove(0).0);
+                            queue.push((id, goto_target(&data)));
+                            dropped
+                        };
+                        if let Some(old) = dropped
+                            && !post_to(&parent, &origin, &[("type", "gridcraft:goto-failed".into()), ("id", old.as_str().into()), ("reason", "error".into())])
+                        {
+                            log::error!("couldn't answer the goto request {old}");
+                        }
+                        ctx.request_repaint();
                     }
                     return;
                 }
@@ -385,6 +427,26 @@ impl Bridge {
 /// Post a message to `parent`; false if it couldn't be sent.
 fn post_to(parent: &web_sys::Window, origin: &str, fields: &[(&str, JsValue)]) -> bool {
     message(fields).is_some_and(|m| parent.post_message(&m, origin).is_ok())
+}
+
+/// The sheet and cell of a `gridcraft:goto` message, or the reason it can't be carried out: a location of
+/// another `kind` is `unsupported`, one without a sheet and a cell is an `error`.
+fn goto_target(data: &JsValue) -> Result<(String, String), &'static str> {
+    let location = js_sys::Reflect::get(data, &JsValue::from_str("location")).map_err(|_| "error")?;
+    if !location.is_object() {
+        return Err("error");
+    }
+    if string(&location, "kind").as_deref() != Some("xlsx") {
+        return Err("unsupported");
+    }
+    // Too long is refused before it is copied.
+    let short = |key: &str, max: u32| {
+        js_sys::Reflect::get(&location, &JsValue::from_str(key)).ok().and_then(|v| v.dyn_into::<js_sys::JsString>().ok()).filter(|s| s.length() <= max).and_then(|s| s.as_string())
+    };
+    match (short("sheet", crate::gate::MAX_GOTO_SHEET_LEN), short("cell", crate::gate::MAX_GOTO_CELL_LEN)) {
+        (Some(sheet), Some(cell)) => Ok((sheet, cell)),
+        _ => Err("error"),
+    }
 }
 
 /// Installs the fonts of a `gridcraft:add-fonts` message; returns the families installed (a family

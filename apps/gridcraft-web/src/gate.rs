@@ -76,6 +76,31 @@ pub fn bytes_purpose(purpose: &str) -> Option<&'static str> {
     ["save", "check", "preview"].into_iter().find(|p| *p == purpose)
 }
 
+/// The most `gridcraft:goto` requests waiting for the next frame; a newer one pushes out the oldest.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_PENDING_GOTOS: usize = 16;
+
+/// The longest sheet name (Excel's limit) and cell reference (`XFD1048576` is 10) a goto takes, in UTF-16 units.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_GOTO_SHEET_LEN: u32 = 31;
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub const MAX_GOTO_CELL_LEN: u32 = 16;
+
+/// Selects `cell` on `sheet` and asks the grid to scroll it into view (`gridcraft:goto`, an `xlsx`
+/// location). The `Err` is the `reason` of `gridcraft:goto-failed`: a sheet or cell that is not there is
+/// `not-found`. The sheet is checked and the cell parsed first, so a miss leaves the view where it was.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub fn goto_xlsx(app: &mut gridcraft_ui_egui::SheetApp, sheet: &str, cell: &str) -> Result<(), &'static str> {
+    let has_sheet = app.session.active().is_some_and(|d| d.wb.sheet_index(sheet).is_some());
+    if !has_sheet || gridcraft_engine::core::CellRef::parse(cell).is_none() {
+        return Err("not-found");
+    }
+    // The sheet goes in its own parameter, so a name holding `'` or `!` needs no quoting.
+    app.run("selection.set", serde_json::json!({"sheet": sheet, "range": cell})).map_err(|_| "error")?;
+    app.grid.ensure_visible = true;
+    Ok(())
+}
+
 /// The most fonts one `gridcraft:add-fonts` takes; the rest are reported as failed.
 pub const MAX_FONTS_PER_MESSAGE: usize = 64;
 
@@ -98,6 +123,90 @@ pub fn font_format_ok(format: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_sheets(names: &[&str]) -> gridcraft_ui_egui::SheetApp {
+        let mut s = gridcraft_engine::Session::new();
+        s.new_workbook();
+        for _ in 1..names.len() {
+            s.run("home.insertSheet", serde_json::json!({})).unwrap();
+        }
+        for (i, name) in names.iter().enumerate() {
+            s.run("sheet.rename", serde_json::json!({"sheet": i, "name": name})).unwrap();
+        }
+        s.run("sheet.activate", serde_json::json!({"sheet": 0})).unwrap();
+        gridcraft_ui_egui::SheetApp::new(s, Default::default())
+    }
+
+    fn selected(app: &gridcraft_ui_egui::SheetApp) -> (usize, String) {
+        let d = app.session.active().unwrap();
+        (d.wb.active_sheet, d.selection.active.a1())
+    }
+
+    #[test]
+    fn goto_switches_sheet_selects_the_cell_and_scrolls() {
+        let mut app = app_with_sheets(&["Sheet1", "Sheet2"]);
+        assert_eq!(goto_xlsx(&mut app, "Sheet2", "B7"), Ok(()));
+        assert_eq!(selected(&app), (1, "B7".into()));
+        assert!(app.grid.ensure_visible);
+        assert_eq!(goto_xlsx(&mut app, "Sheet1", "C3"), Ok(()));
+        assert_eq!(selected(&app), (0, "C3".into()));
+    }
+
+    #[test]
+    fn goto_before_a_workbook_is_open_is_not_found() {
+        let mut app = gridcraft_ui_egui::SheetApp::new(gridcraft_engine::Session::new(), Default::default());
+        assert_eq!(goto_xlsx(&mut app, "Sheet1", "A1"), Err("not-found"));
+    }
+
+    #[test]
+    fn goto_handles_sheet_names_with_spaces_quotes_and_bangs() {
+        let mut app = app_with_sheets(&["Sheet1", "My Sheet", "Bob's", "a!b"]);
+        for (sheet, i) in [("My Sheet", 1), ("Bob's", 2), ("a!b", 3)] {
+            assert_eq!(goto_xlsx(&mut app, sheet, "D12"), Ok(()), "{sheet}");
+            assert_eq!(selected(&app), (i, "D12".into()));
+        }
+    }
+
+    #[test]
+    fn goto_a_missing_sheet_or_bad_cell_is_not_found_and_leaves_the_view() {
+        let mut app = app_with_sheets(&["Sheet1", "Sheet2"]);
+        app.grid.ensure_visible = false;
+        for (sheet, cell) in [("Nope", "A1"), ("Sheet2", "B"), ("Sheet2", ""), ("Sheet2", "A1:B2"), ("Sheet2", "XFE1"), ("Sheet2", "A0")] {
+            assert_eq!(goto_xlsx(&mut app, sheet, cell), Err("not-found"), "{sheet}!{cell}");
+        }
+        assert_eq!(selected(&app), (0, "A1".into()));
+        assert!(!app.grid.ensure_visible);
+    }
+
+    /// The shared tag-check fixture: every xlsx probe location must select the cell holding the tag.
+    #[test]
+    fn goto_probes_of_the_shared_fixture_select_the_tagged_cells() {
+        let (wb, _) = gridcraft_engine::io::open_bytes("jump.xlsx", include_bytes!("../tests/fixtures/jump.xlsx")).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/expected.json")).unwrap();
+        let mut s = gridcraft_engine::Session::new();
+        s.add_document(gridcraft_engine::DocState::new(wb, None, "jump.xlsx".into()));
+        let mut app = gridcraft_ui_egui::SheetApp::new(s, Default::default());
+        let probes = expected["xlsx"]["probes"].as_array().unwrap();
+        assert!(!probes.is_empty());
+        // Every error and warning location of the fixture must be reachable too.
+        let mut locations: Vec<&serde_json::Value> = probes.iter().map(|p| &p["location"]).collect();
+        locations.extend(["errors", "warnings"].iter().flat_map(|k| expected["xlsx"][k].as_array().unwrap()).map(|e| &e["location"]));
+        for loc in locations {
+            let (sheet, cell) = (loc["sheet"].as_str().unwrap(), loc["cell"].as_str().unwrap());
+            assert_eq!(goto_xlsx(&mut app, sheet, cell), Ok(()), "{sheet}!{cell}");
+            let d = app.session.active().unwrap();
+            assert_eq!(d.wb.active().unwrap().name, sheet);
+            assert_eq!(d.selection.active.a1(), cell);
+        }
+        for p in probes {
+            let (sheet, cell) = (p["location"]["sheet"].as_str().unwrap(), p["location"]["cell"].as_str().unwrap());
+            goto_xlsx(&mut app, sheet, cell).unwrap();
+            let d = app.session.active().unwrap();
+            let at = d.selection.active;
+            let text = d.wb.active().unwrap().value(at).display();
+            assert_eq!(text, p["cell"].as_str().unwrap(), "{sheet}!{cell}");
+        }
+    }
 
     #[test]
     fn a_ppm_build_without_the_parent_page_opens_nothing() {

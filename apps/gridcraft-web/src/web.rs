@@ -107,6 +107,7 @@ impl eframe::App for WebShell {
             bridge.apply_policy(&self.app);
             #[cfg(feature = "ppm-host")]
             bridge.replace_documents(&mut self.app);
+            bridge.apply_gotos(&mut self.app);
         }
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         // Host lock: the host sends the files; dropped ones are ignored.
@@ -129,6 +130,7 @@ impl eframe::App for WebShell {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        crate::clipboard_keys::drop_clipboard_key_presses(&mut raw.events);
         self.app.raw_input_hook(raw);
     }
 

@@ -1664,9 +1664,11 @@ fn format_cells(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: 
             ui.checkbox(&mut st.align.shrink, lang.tr("Shrink to fit"));
         }
         "Font" => {
-            egui::ComboBox::from_label(lang.tr("Font")).selected_text(st.font.name.clone()).show_ui(ui, |ui| {
-                for f in crate::fonts::families() {
-                    ui.selectable_value(&mut st.font.name, f.clone(), f.clone());
+            egui::ComboBox::from_label(lang.tr("Font")).selected_text(crate::ribbon::font_label(app.ui.language, &st.font.name)).show_ui(ui, |ui| {
+                let names = if gridcraft_engine::hostlock::HOST_BUILD { crate::ribbon::host_font_names(app.ui.language, &st.font.name) } else { crate::fonts::families() };
+                for f in names {
+                    let label = crate::ribbon::font_label(app.ui.language, &f);
+                    ui.selectable_value(&mut st.font.name, f, label);
                 }
             });
             ui.add(egui::Slider::new(&mut st.font.size, 6.0..=72.0).text(lang.tr("Size")));

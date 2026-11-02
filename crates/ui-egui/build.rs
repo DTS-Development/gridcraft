@@ -28,11 +28,14 @@ fn main() {
     embed_office_fonts();
 }
 
-/// The families of the Office-compatible set a web build embeds (their licences travel with them).
-const OFFICE_FAMILIES: &[&str] = &["Carlito", "Caladea", "Liberation Sans", "Liberation Serif", "Liberation Mono"];
+/// The families of the Office-compatible set a web build embeds (their licences travel with them):
+/// the Latin twins, then the Korean faces beside NanumGothic (whose Regular is `KOREAN_FONT`, see
+/// `embed_korean_font`; only its Bold is listed here).
+const OFFICE_FAMILIES: &[&str] =
+    &["Carlito", "Caladea", "Liberation Sans", "Liberation Serif", "Liberation Mono", "NanumMyeongjo", "NanumGothicCoding", "Black Han Sans", "Pretendard"];
 
 /// With `CRAFT_FONTS_DIR`, a web (wasm32) build embeds the [`OFFICE_FAMILIES`] faces of its
-/// `fonts/manifest.txt` as `OFFICE_FONTS` (`(family, style, bytes)`): cells set in Calibri, Cambria,
+/// `fonts/manifest.txt` (and NanumGothic Bold) as `OFFICE_FONTS` (`(family, style, bytes)`): cells set in Calibri, Cambria,
 /// Arial, Times New Roman or Courier New draw with the faces the server's PDF renderer uses. Empty
 /// elsewhere. Only reads the local checkout (no network).
 fn embed_office_fonts() {
@@ -48,7 +51,8 @@ fn embed_office_fonts() {
                         println!("cargo::error={}: malformed line (want `family | style | file | …`): {line}", manifest.display());
                         continue;
                     };
-                    if !OFFICE_FAMILIES.contains(family) {
+                    // NanumGothic Regular is already embedded as `KOREAN_FONT`; its Bold comes with the set.
+                    if !OFFICE_FAMILIES.contains(family) && (*family, *style) != ("NanumGothic", "Bold") {
                         continue;
                     }
                     match dir.join(file).canonicalize() {
