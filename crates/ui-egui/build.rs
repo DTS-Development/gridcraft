@@ -32,7 +32,7 @@ fn main() {
 /// the Latin twins, then the Korean faces beside NanumGothic (whose Regular is `KOREAN_FONT`, see
 /// `embed_korean_font`; only its Bold is listed here).
 const OFFICE_FAMILIES: &[&str] =
-    &["Carlito", "Caladea", "Liberation Sans", "Liberation Serif", "Liberation Mono", "NanumMyeongjo", "NanumGothicCoding", "Black Han Sans", "Pretendard"];
+    &["Carlito", "Caladea", "Liberation Sans", "Liberation Serif", "Liberation Mono", "NanumMyeongjo", "NanumGothicCoding", "Black Han Sans", "Pretendard", "Noto Sans KR", "Noto Serif KR", "Gowun Batang"];
 
 /// With `CRAFT_FONTS_DIR`, a web (wasm32) build embeds the [`OFFICE_FAMILIES`] faces of its
 /// `fonts/manifest.txt` (and NanumGothic Bold) as `OFFICE_FONTS` (`(family, style, bytes)`): cells set in Calibri, Cambria,
