@@ -323,8 +323,8 @@ pub fn office_role_key(family: &str, bold: bool, italic: bool) -> String {
 /// New Roman give Liberation Serif; Courier, Courier New, Consolas and Lucida Console give Liberation Mono; the
 /// Korean document names give NanumGothic (gothic), NanumMyeongjo (Batang, Gungsuh, Myeongjo),
 /// NanumGothicCoding (the fixed-width Gulim/Dotum/Batang/Gungsuh "che" names) or Black Han Sans
-/// (the HY headline names); NanumGothic, NanumMyeongjo, NanumGothicCoding, Black Han Sans and
-/// Pretendard give themselves; Inter gives Inter (not embedded here: the caller falls
+/// (the HY headline names); NanumGothic, NanumMyeongjo, NanumGothicCoding, Black Han Sans,
+/// Pretendard, Noto Sans KR, Noto Serif KR and Gowun Batang give themselves; Inter gives Inter (not embedded here: the caller falls
 /// back to Carlito). Every other name gives Carlito, and Hangul in any of them falls back to
 /// NanumGothic.
 pub fn office_family(name: &str) -> &'static str {
@@ -339,6 +339,9 @@ pub fn office_family(name: &str) -> &'static str {
         "굴림체" | "gulimche" | "돋움체" | "dotumche" | "바탕체" | "batangche" | "궁서체" | "gungsuhche" | "nanumgothiccoding" | "나눔고딕코딩" => "NanumGothicCoding",
         "hy헤드라인m" | "hyheadline-medium" | "hy견고딕" | "hygothic-extra" | "black han sans" | "검은고딕" => "Black Han Sans",
         "pretendard" => "Pretendard",
+        "noto sans kr" => "Noto Sans KR",
+        "noto serif kr" => "Noto Serif KR",
+        "gowun batang" | "고운바탕" => "Gowun Batang",
         "맑은 고딕"
         | "malgun gothic"
         | "굴림"
@@ -353,9 +356,7 @@ pub fn office_family(name: &str) -> &'static str {
         | "nanumgothic"
         | "hy중고딕"
         | "hygothic-medium"
-        | "noto sans kr"
         | "noto sans cjk kr"
-        | "noto serif kr"
         | "apple sd gothic neo" => "NanumGothic",
         _ => "Carlito",
     }
@@ -363,7 +364,7 @@ pub fn office_family(name: &str) -> &'static str {
 
 /// Is `family` (an [`office_family`] answer) one of the embedded Korean faces?
 pub fn is_korean_family(family: &str) -> bool {
-    matches!(family, "NanumGothic" | "NanumMyeongjo" | "NanumGothicCoding" | "Black Han Sans" | "Pretendard")
+    matches!(family, "NanumGothic" | "NanumMyeongjo" | "NanumGothicCoding" | "Black Han Sans" | "Pretendard" | "Noto Sans KR" | "Noto Serif KR" | "Gowun Batang")
 }
 
 /// How a font family is shown: its Korean name from `names` (`(English, Korean)`) when the

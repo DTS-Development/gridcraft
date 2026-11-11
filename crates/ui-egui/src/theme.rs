@@ -983,9 +983,7 @@ mod font_binding_tests {
             "NanumGothic",
             "HY중고딕",
             "HYGothic-Medium",
-            "Noto Sans KR",
             "Noto Sans CJK KR",
-            "Noto Serif KR",
             "Apple SD Gothic Neo",
         ] {
             assert_eq!(office_family(name), "NanumGothic", "{name}");
@@ -1014,6 +1012,12 @@ mod font_binding_tests {
             assert_eq!(office_family(name), "Black Han Sans", "{name}");
         }
         assert_eq!(office_family("Pretendard"), "Pretendard");
+        // 기본 글꼴 세트(#61): 이름 그대로 자기 글꼴로 그린다(예전에는 NanumGothic으로 보냈다).
+        assert_eq!(office_family("Noto Sans KR"), "Noto Sans KR");
+        assert_eq!(office_family("Noto Serif KR"), "Noto Serif KR");
+        for name in ["Gowun Batang", "고운바탕"] {
+            assert_eq!(office_family(name), "Gowun Batang", "{name}");
+        }
     }
 
     /// NanumGothic's bold roles use the embedded Bold face, the regular and italic roles the
