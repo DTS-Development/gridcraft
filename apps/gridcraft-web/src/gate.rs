@@ -120,6 +120,25 @@ pub fn font_format_ok(format: &str) -> bool {
     matches!(format, "ttf" | "otf")
 }
 
+/// Letters whose Ctrl/Cmd shortcut GridCraft runs itself and the browser would also act on (find,
+/// find next, history for replace). Only the PPM host page cancels the browser's side of them.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+const BROWSER_CLASHING_LETTERS: [char; 3] = ['f', 'g', 'h'];
+
+/// Whether a key press is one of those shortcuts: Ctrl or Cmd held (not both), no Alt, and one of the letters
+/// above (Shift allowed: Shift+G is find previous). `code` is the physical key, for layouts whose
+/// `key` is not a Latin letter. Plain typing and the clipboard keys (C, V, X) are never matched.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
+pub fn blocks_page_default(ctrl: bool, meta: bool, alt: bool, key: &str, code: &str) -> bool {
+    // Ctrl and Cmd together is the Mac's full-screen (Ctrl+Cmd+F), not a shortcut of the editor.
+    if ctrl == meta || alt {
+        return false;
+    }
+    let by_key = key.chars().count() == 1 && key.chars().next().is_some_and(|c| BROWSER_CLASHING_LETTERS.contains(&c.to_ascii_lowercase()));
+    let by_code = code.strip_prefix("Key").is_some_and(|l| l.chars().count() == 1 && l.chars().next().is_some_and(|c| BROWSER_CLASHING_LETTERS.contains(&c.to_ascii_lowercase())));
+    by_key || by_code
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +344,29 @@ mod tests {
     #[test]
     fn the_notice_says_to_open_from_ppm() {
         assert!(OPEN_FROM_PPM.contains("PPM에서 열어 주세요"));
+    }
+
+    #[test]
+    fn find_keys_lose_the_browsers_default() {
+        for l in ['f', 'g', 'h'].iter().map(|c: &char| c.to_string()) {
+            let up = l.to_uppercase();
+            let code = format!("Key{up}");
+            assert!(blocks_page_default(false, true, false, &l, &code), "Cmd+{l}");
+            assert!(blocks_page_default(true, false, false, &l, &code), "Ctrl+{l}");
+            assert!(blocks_page_default(false, true, false, &up, &code), "Cmd+Shift+{l}");
+        }
+        assert!(blocks_page_default(true, false, false, "ㄹ", "KeyF"), "Korean layout, by the physical key");
+    }
+
+    #[test]
+    fn typing_the_clipboard_and_other_shortcuts_are_left_alone() {
+        assert!(!blocks_page_default(false, false, false, "f", "KeyF"), "plain typing");
+        assert!(!blocks_page_default(false, false, false, "G", "KeyG"), "Shift only");
+        assert!(!blocks_page_default(true, false, true, "f", "KeyF"), "Ctrl+Alt+F");
+        assert!(!blocks_page_default(true, true, false, "f", "KeyF"), "Ctrl+Cmd+F is full screen on a Mac");
+        for (k, c) in [("c", "KeyC"), ("v", "KeyV"), ("x", "KeyX"), ("a", "KeyA"), ("z", "KeyZ"), ("Enter", "Enter"), ("Control", "ControlLeft")] {
+            assert!(!blocks_page_default(true, false, false, k, c), "Ctrl+{k}");
+            assert!(!blocks_page_default(false, true, false, k, c), "Cmd+{k}");
+        }
     }
 }
