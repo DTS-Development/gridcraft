@@ -122,11 +122,13 @@ pub fn font_format_ok(format: &str) -> bool {
 
 /// Letters whose Ctrl/Cmd shortcut GridCraft runs itself and the browser would also act on (find,
 /// find next, history for replace). Only the PPM host page cancels the browser's side of them.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
 const BROWSER_CLASHING_LETTERS: [char; 3] = ['f', 'g', 'h'];
 
 /// Whether a key press is one of those shortcuts: Ctrl or Cmd held, no Alt, and one of the letters
 /// above (Shift allowed: Shift+G is find previous). `code` is the physical key, for layouts whose
 /// `key` is not a Latin letter. Plain typing and the clipboard keys (C, V, X) are never matched.
+#[cfg_attr(not(feature = "ppm-host"), allow(dead_code))]
 pub fn blocks_page_default(ctrl: bool, meta: bool, alt: bool, key: &str, code: &str) -> bool {
     if !(ctrl || meta) || alt {
         return false;
