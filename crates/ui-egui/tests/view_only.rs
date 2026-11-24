@@ -355,11 +355,9 @@ fn press_tab(h: &mut Harness, tab: &str, chart: Option<u32>) -> (usize, usize) {
         for id in &ran {
             assert!(gridcraft_engine::hostlock::read_only_permits(id), "{tab} control at {rect:?} ran `{id}`, which a read-only document refuses");
         }
-        let edits = ran.iter().any(|id| !VIEW_STATE.contains(&id.as_str()));
-        assert!(
-            std::sync::Arc::ptr_eq(&wb, &doc.wb) || !edits,
-            "{tab} control at {rect:?} (washed out: {off}) changed the workbook; ran {ran:?}"
-        );
+        let view_only = !ran.is_empty() && ran.iter().all(|id| VIEW_STATE.contains(&id.as_str()));
+        // The workbook is the same one, unless a view-state command ran (and nothing else did).
+        assert!(std::sync::Arc::ptr_eq(&wb, &doc.wb) || view_only, "{tab} control at {rect:?} (washed out: {off}) changed the workbook; ran {ran:?}");
         assert!(!off || ran.is_empty() || ran.iter().all(|id| VIEW_STATE.contains(&id.as_str())), "{tab} control at {rect:?} is washed out but ran {ran:?}");
         assert!(h.state().message.is_none(), "{tab} control at {rect:?} showed a message: {:?}", h.state().message);
         washed += usize::from(off);
@@ -418,4 +416,21 @@ fn an_editable_document_keeps_its_labels_while_a_read_only_one_washes_them() {
             assert_eq!(app.label_washed(id), washed, "{id}: the label is washed only in a read-only document");
         }
     }
+}
+
+/// The dialogs a read-only document refuses to open are the editing ones of an editable document, as before.
+#[test]
+fn an_editable_document_still_opens_the_editing_dialogs() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    for name in ["formatCells", "sort", "comment", "insertFunction"] {
+        h.state_mut().dialog = None;
+        h.state_mut().open_dialog(name, json!({}));
+        h.run_steps(2);
+        assert!(h.state().dialog.is_some(), "the `{name}` dialog opens in an editable document");
+    }
+    host_open(&mut h, &inbox, read_only());
+    h.state_mut().dialog = None;
+    h.state_mut().open_dialog("formatCells", json!({}));
+    assert!(h.state().dialog.is_none(), "and not in a read-only one");
 }

@@ -388,6 +388,11 @@ pub fn color_palette(ui: &mut Ui, theme_colors: &[u32; 12], none_label: &str) ->
 
 pub fn message_box(app: &mut SheetApp, ctx: &egui::Context) {
     let Some((title, msg)) = app.message.clone() else { return };
+    // A read-only document refuses quietly: the refusal never shows, not even for a frame.
+    if msg.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT) {
+        app.message = None;
+        return;
+    }
     let lang = app.ui.language;
     let mut close = false;
     egui::Modal::new(egui::Id::new("message_box")).show(ctx, |ui| {

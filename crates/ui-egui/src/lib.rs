@@ -291,6 +291,9 @@ pub const UI_COMMANDS_ALLOWED: &[&str] = &[
 /// Dialogs a host-locked app never opens: they pick local workbooks, list files, run scripts or
 /// protect the workbook or a sheet (`review.protectWorkbook`, `review.protectSheet` and the rest are
 /// locked). `saveAs` stays: Save reaches the host through it.
+pub(crate) const DIALOGS_LOCKED: &[&str] =
+    &["agents", "allowEditRanges", "macros", "open", "protectSheet", "protectWorkbook", "start", "unprotectSheet", "unprotectWorkbook"];
+
 /// Dialogs whose confirmation is a command a read-only document refuses (they only edit the workbook).
 const READ_ONLY_NO_DIALOGS: &[&str] = &[
     "allowEditRanges", "analysisToolPak", "cfQuick", "chartTitle", "columnWidth", "comment", "defineName", "deleteCells", "forecastSheet",
@@ -299,9 +302,6 @@ const READ_ONLY_NO_DIALOGS: &[&str] = &[
     "rowHeight", "selectData", "solver", "solverResults", "sort", "sparkline", "subtotal", "textToColumns", "unprotectSheet",
     "unprotectWorkbook",
 ];
-
-pub(crate) const DIALOGS_LOCKED: &[&str] =
-    &["agents", "allowEditRanges", "macros", "open", "protectSheet", "protectWorkbook", "start", "unprotectSheet", "unprotectWorkbook"];
 
 /// The command whose switch decides whether the host-locked app opens the dialog `name` (`None`:
 /// always). `saveCopy` is every export and Save As in one dialog: its format picks the switch.
@@ -1007,6 +1007,8 @@ impl SheetApp {
     /// password dialog and the control channel.
     pub fn after_open(&mut self, path: Option<&str>, r: &Json) {
         self.backstage = None;
+        // A header being edited in the earlier document must not be written into this one.
+        paper_view::cancel(self);
         if let Some(path) = path {
             self.ui.recent.retain(|p| p != path);
             self.ui.recent.insert(0, path.to_string());
