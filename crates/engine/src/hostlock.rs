@@ -523,6 +523,7 @@ pub const READ_ONLY_ALLOWED: &[&str] = &[
     "history.list",
     "home.addIns",
     "insert.chartRecommendations",
+    "link.open",
     "pivot.fieldList",
     "pivot.fields",
     "pivot.list",
@@ -743,7 +744,6 @@ pub const READ_ONLY_BLOCKED: &[&str] = &[
     "insert.symbol",
     "insert.table",
     "insert.textBox",
-    "link.open",
     "object.delete",
     "object.move",
     "object.setAnchorMode",
@@ -1003,7 +1003,8 @@ mod tests {
     #[test]
     fn read_only_allowed_commands_are_not_edits() {
         // Edits are `cmd!` commands that record undo history; the only ones allowed are view-only.
-        let view_only = ["view.zoom", "view.zoom100", "view.zoomToSelection"];
+        // `link.open` is declared undoable but only follows a link (its host policy is the menu lock).
+        let view_only = ["view.zoom", "view.zoom100", "view.zoomToSelection", "link.open"];
         for spec in command_specs() {
             if READ_ONLY_ALLOWED.contains(&spec.id) && spec.undoable {
                 assert!(view_only.contains(&spec.id), "`{}` is undoable yet allowed read-only", spec.id);

@@ -147,3 +147,14 @@ fn every_allowed_command_leaves_the_workbook_alone() {
     changed.retain(|id| !view_state.contains(id));
     assert!(changed.is_empty(), "allowed commands that edit the workbook: {changed:?}");
 }
+
+/// Opening a link in the document is not an edit: like printing, it follows the host policy (the menu lock).
+#[test]
+fn opening_a_link_is_left_to_the_host_policy() {
+    let mut s = Session::new();
+    open(&mut s, Some(read_only()));
+    assert!(gridcraft_engine::hostlock::read_only_permits("link.open"));
+    let wb = s.active().unwrap().wb.clone();
+    s.execute("link.open", json!({"url": "Sheet1!A1"})).expect("an in-workbook link is followed");
+    assert!(std::sync::Arc::ptr_eq(&wb, &s.active().unwrap().wb));
+}
