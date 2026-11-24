@@ -77,6 +77,7 @@ fn open(s: &mut Session, p: &Json) -> Result<Json> {
         s.close_document(0);
     }
     let mut doc = DocState::new(wb, path, title);
+    doc.view = s.take_next_view();
     if crate::io::FileKind::from_path(&name).is_none() && gridcraft_xlsx::sniff(&bytes) == gridcraft_xlsx::Format::Xlsx {
         doc.content_kind = Some(crate::io::FileKind::Xlsx);
     }
