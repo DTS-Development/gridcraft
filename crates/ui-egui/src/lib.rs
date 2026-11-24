@@ -44,6 +44,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 pub use control::{ControlRequest, ControlResponse};
+
+/// The options of one host `open`: the command overrides of its policy and how the document is shown.
+/// They belong to that file alone; a file that comes without them gets the defaults.
+#[derive(Clone, Debug, Default)]
+pub struct HostOpen {
+    pub overrides: Vec<(String, bool)>,
+    pub view: gridcraft_engine::ViewOptions,
+}
 pub mod desktop_theme;
 
 /// Persisted UI preferences.
@@ -337,6 +345,8 @@ pub struct SheetApp {
     print_feedback_seen: Option<printing::Feedback>,
     /// Synthetic input from agents, one batch per frame (drags need several frames).
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
+    /// What the host's `open` messages asked for, one per file still to come through the inbox, in order.
+    pub open_queue: std::collections::VecDeque<HostOpen>,
     pub control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
     pub grid: grid::GridState,
     pub perf: Perf,
@@ -397,6 +407,7 @@ impl SheetApp {
             printing: Default::default(),
             print_feedback_seen: None,
             synthetic: Default::default(),
+            open_queue: Default::default(),
             control_rx: None,
             grid: grid::GridState {
                 autosave: false,
@@ -699,7 +710,7 @@ impl SheetApp {
     /// Shows a command error: a toast for an unavailable command, else a message box.
     fn alert(&mut self, e: String) {
         // The host lock refuses quietly: the item is not in the menus either.
-        if e.contains(gridcraft_engine::hostlock::BLOCKED_TEXT) {
+        if e.contains(gridcraft_engine::hostlock::BLOCKED_TEXT) || e.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT) {
             return;
         }
         if e.contains("is not available right now") {
@@ -1032,6 +1043,10 @@ impl SheetApp {
     /// cell to the engine so a save writes them (`sheetView topLeftCell`). Normal view only:
     /// Page Layout view scrolls over pages, not cells.
     pub fn store_view_state(&mut self) {
+        // A read-only document is never saved, so its view needs no recording.
+        if self.session.read_only() {
+            return;
+        }
         let Some(d) = self.session.active_mut() else { return };
         let mut tops = Vec::new();
         for (&(uid, si), v) in &self.views {
@@ -1049,6 +1064,10 @@ impl SheetApp {
 
     /// Starts editing the active cell. `text` replaces the content (typing) or pre-fills it.
     pub fn begin_edit(&mut self, text: Option<String>, from_formula_bar: bool) {
+        // A read-only document opens no editor (typing, F2, double click, formula bar).
+        if self.session.read_only() {
+            return;
+        }
         if let Err(e) = self.commit_text_box_edit() {
             self.message = Some(("Text Box".into(), clean_error(&e)));
             return;
@@ -1293,6 +1312,14 @@ impl SheetApp {
             .unwrap_or_default();
         for (name, bytes) in arrived {
             let b64 = gridcraft_engine::io::base64_encode(&bytes);
+            // A host's open brings its own policy and view options, set just before this file opens
+            // (it may sit behind a password prompt: the options wait for the open that succeeds).
+            let policy_before = self.open_queue.pop_front().map(|o| {
+                let before = self.session.host_policy().map(|p| p.overrides());
+                self.session.set_policy(&o.overrides);
+                self.session.set_next_view(Some(o.view));
+                before
+            });
             match self.run("file.open", json!({"name": &name, "base64": &b64})) {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
@@ -1303,7 +1330,16 @@ impl SheetApp {
                     self.backstage = None;
                     self.open_dialog("openPassword", json!({"name": name, "base64": b64}));
                 }
-                Err(e) => self.message = Some(("GridCraft".into(), clean_error(&e))),
+                Err(e) => {
+                    // A failed open leaves the earlier documents as they were, options included.
+                    if let Some(before) = policy_before {
+                        self.session.set_next_view(None);
+                        if let Some(before) = before {
+                            self.session.set_policy(&before);
+                        }
+                    }
+                    self.message = Some(("GridCraft".into(), clean_error(&e)));
+                }
             }
             self.after_engine();
         }
@@ -1352,21 +1388,31 @@ impl SheetApp {
         // The language the widgets translate with this frame (see `i18n::current`).
         i18n::set_current(&ctx, self.ui.language);
         let t = theme::Tokens::get(&ctx);
-        if self.backstage.is_none() {
+        // The host may hide the editing chrome for this document (`chrome: false`): no title bar,
+        // ribbon, formula bar, status bar or File menu; the sheet tabs and the grid stay.
+        let chrome = self.session.active().is_none_or(|d| d.view.chrome);
+        if !chrome {
+            self.backstage = None;
+        }
+        if self.backstage.is_none() && chrome {
             self.ribbon_keys(&ctx);
         }
-        ribbon::title_bar(self, ui);
+        if chrome {
+            ribbon::title_bar(self, ui);
+        }
         if self.backstage.is_some() {
             // File tab: the Backstage view replaces everything below the title bar.
             backstage::show(self, ui);
         } else {
-            ribbon::show(self, ui);
-            widgets::notice_bar(self, ui);
-            if self.session.prefs.formula_bar {
-                formula_bar::show(self, ui);
-            }
-            if self.ui.status_bar {
-                tabs::status_bar(self, ui);
+            if chrome {
+                ribbon::show(self, ui);
+                widgets::notice_bar(self, ui);
+                if self.session.prefs.formula_bar {
+                    formula_bar::show(self, ui);
+                }
+                if self.ui.status_bar {
+                    tabs::status_bar(self, ui);
+                }
             }
             tabs::sheet_tabs(self, ui);
             pivot_pane::show(self, ui);
@@ -1376,6 +1422,9 @@ impl SheetApp {
                 grid::show(self, ui);
                 self.perf.grid_ms = now_ms() - g0;
             });
+        }
+        if !chrome && self.session.active().is_some_and(|d| d.view.zoom_controls) {
+            tabs::zoom_overlay(self, &ctx);
         }
         dialogs::show(self, &ctx);
         widgets::message_box(self, &ctx);

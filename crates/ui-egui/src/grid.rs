@@ -2752,6 +2752,11 @@ fn filter_table_range(sh: &Sheet, col: u32, row: u32) -> Option<RangeRef> {
 
 fn filter_menu(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, was_open: bool) {
     let Some((col, row, at)) = app.grid.filter_menu else { return };
+    // Filtering changes the workbook; a read-only document gets no menu.
+    if app.session.read_only() {
+        app.grid.filter_menu = None;
+        return;
+    }
     let Some(d) = app.session.active() else { return };
     let wb = d.wb.clone();
     let si = wb.active_sheet;

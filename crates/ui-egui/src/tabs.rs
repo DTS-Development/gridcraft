@@ -151,12 +151,15 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                                 if resp.clicked() {
                                     activate_sheet(app, i);
                                 }
-                                if resp.double_clicked() {
+                                // A read-only document's tabs only switch sheets.
+                                let read_only = app.session.read_only();
+                                if resp.double_clicked() && !read_only {
                                     app.grid.renaming_tab = Some(i);
                                     app.grid.rename_text = name.clone();
                                 }
                                 // Drag to reorder.
                                 if resp.drag_stopped()
+                                    && !read_only
                                     && let Some(p) = ui.input(|inp| inp.pointer.interact_pos())
                                 {
                                     let dx = p.x - r.center().x;
@@ -167,6 +170,10 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                                     }
                                 }
                                 resp.context_menu(|ui| {
+                                    if read_only {
+                                        ui.close();
+                                        return;
+                                    }
                                     ui.set_min_width(180.0);
                                     if ui.button(crate::i18n::t(ui, "Insert Sheet")).clicked() {
                                         app.run_or_alert("home.insertSheet", json!({"before": i}));
@@ -216,7 +223,7 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                     });
             });
             ui.add_space(6.0);
-            if crate::widgets::icon_button(ui, Icon::Plus, t.text_dim, "New sheet (⇧F11)", vec2(26.0, 26.0)).clicked() {
+            if !app.session.read_only() && crate::widgets::icon_button(ui, Icon::Plus, t.text_dim, "New sheet (⇧F11)", vec2(26.0, 26.0)).clicked() {
                 app.run_or_alert("home.insertSheet", json!({}));
             }
             // The track ends where the grid does, so it stops under the vertical scrollbar.
@@ -372,4 +379,42 @@ mod tests {
         let sheets = [Sheet::new("Data"), hidden, very_hidden, Sheet::new("Summary")].map(Arc::new);
         assert_eq!(navigator_items(&sheets), vec![("0".to_string(), "Data".to_string()), ("3".to_string(), "Summary".to_string())]);
     }
+}
+
+/// The zoom buttons a document with its chrome hidden keeps (`zoomControls`): [-] 100% [+] over the
+/// bottom right corner of the grid, running the same `view.zoom` as the status bar.
+pub fn zoom_overlay(app: &mut SheetApp, ctx: &egui::Context) {
+    let t = Tokens::get(ctx);
+    let zoom = app.session.active().and_then(|d| d.wb.active().map(|s| s.zoom)).unwrap_or(100);
+    egui::Area::new(egui::Id::new("gridcraft.zoom_overlay"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-28.0, -52.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(t.tab_bar)
+                .stroke(Stroke::new(1.0, t.ribbon_border))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(6, 3))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if crate::widgets::icon_button(ui, Icon::Minus, t.text_dim, "Zoom Out", vec2(22.0, 22.0)).clicked() {
+                            let z = ((zoom as f32 / 10.0).ceil() * 10.0 - 10.0).max(10.0);
+                            app.run_or_alert("view.zoom", json!({"percent": z}));
+                        }
+                        if ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(format!("{zoom}%")).font(theme::ui_font(12.5)).color(t.text_dim))
+                                    .sense(Sense::click()),
+                            )
+                            .clicked()
+                        {
+                            app.run_or_alert("view.zoom100", json!({}));
+                        }
+                        if crate::widgets::icon_button(ui, Icon::Plus, t.text_dim, "Zoom In", vec2(22.0, 22.0)).clicked() {
+                            let z = ((zoom as f32 / 10.0).floor() * 10.0 + 10.0).min(400.0);
+                            app.run_or_alert("view.zoom", json!({"percent": z}));
+                        }
+                    });
+                });
+        });
 }

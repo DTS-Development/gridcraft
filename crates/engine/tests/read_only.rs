@@ -43,7 +43,9 @@ fn edits_are_refused_and_leave_the_workbook_alone() {
         ("sheet.rename", json!({"name": "Z"})),
     ] {
         match s.execute(id, params) {
-            Err(EngineError::ReadOnly(_)) => {}
+            Err(e @ EngineError::ReadOnly(_)) => {
+                assert!(e.to_string().contains(gridcraft_engine::hostlock::READ_ONLY_TEXT), "the app silences this error by its text");
+            }
             other => panic!("`{id}` should be refused as read-only, got {other:?}"),
         }
     }

@@ -472,6 +472,9 @@ pub fn listed(policy: Option<&Policy>, id: &str) -> bool {
     }
 }
 
+/// The text of the error a read-only document gives (the app refuses quietly).
+pub const READ_ONLY_TEXT: &str = "read-only document";
+
 /// Whether a read-only document (opened with the host's `readOnly`) may run `id`: only the commands
 /// of [`READ_ONLY_ALLOWED`]. Anything else, an unclassified id included, is refused.
 pub fn read_only_permits(id: &str) -> bool {
