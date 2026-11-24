@@ -309,44 +309,93 @@ fn click_at(h: &mut Harness, pos: egui::Pos2) {
     h.run_steps(2);
 }
 
-/// The whole ribbon of a read-only workbook, tab by tab and control by control (the list comes from what
-/// the ribbon really drew): each control is pressed, a dialog it opens is confirmed with Enter, and
-/// nothing reaches the workbook, its undo history or its dirty flag. The edit controls are all washed out.
+/// A workbook with a table (A1:B3) and a chart, so the Table Design and Chart Design tabs have something to show.
+fn xlsx_table_chart() -> Vec<u8> {
+    let mut s = Session::new();
+    s.new_workbook();
+    for (cell, v) in [("A1", "k"), ("B1", "v"), ("A2", "a"), ("B2", "1"), ("A3", "b"), ("B3", "2")] {
+        s.execute("cell.set", json!({"cell": cell, "input": v})).unwrap();
+    }
+    s.execute("insert.table", json!({"range": "A1:B3", "header": true})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
+    let b64 = s.execute("file.saveBytes", json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+    gridcraft_engine::io::base64_decode(&b64).unwrap()
+}
+
+/// What a control may change in a read-only workbook: how it is shown (the workbook stores the view mode and zoom).
+const VIEW_STATE: [&str; 6] = ["view.zoom", "view.normal", "view.pageBreakPreview", "view.pageLayout", "view.zoom100", "view.zoomToSelection"];
+
+/// Presses every control of `tab` (the list is what the ribbon really drew), confirms a dialog it opens with
+/// Enter, and checks that the workbook is the same one afterwards, whether the control is washed out or not:
+/// the only commands that ran are ones a read-only document permits, and the workbook changed (as a value)
+/// only for view-state commands. Returns (pressed, washed out).
+fn press_tab(h: &mut Harness, tab: &str, chart: Option<u32>) -> (usize, usize) {
+    h.state_mut().ui.ribbon_tab = tab.into();
+    h.state_mut().selected_chart = chart;
+    h.run_steps(3);
+    assert!(!h.state().ribbon_overflow, "{tab}: the ribbon is wider than its card, so controls are cut off and not tested");
+    let controls = h.state().ribbon_controls.clone();
+    assert!(!controls.is_empty() || tab == "Automate", "{tab}: the ribbon drew no controls");
+    let (mut pressed, mut washed) = (0, 0);
+    for (rect, off) in controls {
+        h.state_mut().ui.ribbon_tab = tab.into();
+        h.state_mut().selected_chart = chart;
+        h.state_mut().dialog = None;
+        h.run_steps(2);
+        let wb = h.state().session.active().unwrap().wb.clone();
+        let before = h.state().session.journal.len();
+        click_at(h, rect.center());
+        if h.state().dialog.is_some() {
+            h.key_press(Key::Enter);
+            h.run_steps(3);
+        }
+        let ran: Vec<String> = h.state().session.journal.iter().skip(before).map(|(id, _)| id.clone()).collect();
+        let doc = h.state().session.active().unwrap();
+        for id in &ran {
+            assert!(gridcraft_engine::hostlock::read_only_permits(id), "{tab} control at {rect:?} ran `{id}`, which a read-only document refuses");
+        }
+        let edits = ran.iter().any(|id| !VIEW_STATE.contains(&id.as_str()));
+        assert!(
+            std::sync::Arc::ptr_eq(&wb, &doc.wb) || !edits,
+            "{tab} control at {rect:?} (washed out: {off}) changed the workbook; ran {ran:?}"
+        );
+        assert!(!off || ran.is_empty() || ran.iter().all(|id| VIEW_STATE.contains(&id.as_str())), "{tab} control at {rect:?} is washed out but ran {ran:?}");
+        washed += usize::from(off);
+        pressed += 1;
+        h.key_press(Key::Escape);
+        h.key_press(Key::Escape);
+        h.state_mut().dialog = None;
+        h.run_steps(2);
+    }
+    (pressed, washed)
+}
+
+/// The whole ribbon of a read-only workbook, tab by tab and control by control: pressing a control, and
+/// confirming the dialog it opens, never changes the workbook; the edit controls are all washed out.
 #[test]
 fn every_ribbon_control_of_a_read_only_workbook_is_inert_and_the_edit_ones_are_washed_out() {
     let (mut h, inbox, _) = harness();
     host_open(&mut h, &inbox, read_only());
-    let mut pressed = 0;
-    let mut washed = 0;
+    let (mut pressed, mut washed) = (0, 0);
     for tab in ["Home", "Insert", "Draw", "Page Layout", "Formulas", "Data", "Review", "View", "Automate"] {
-        h.state_mut().ui.ribbon_tab = tab.into();
-        h.run_steps(3);
-        let controls = h.state().ribbon_controls.clone();
-        assert!(!controls.is_empty() || tab == "Automate", "{tab}: the ribbon drew no controls");
-        for (rect, off) in controls {
-            h.state_mut().ui.ribbon_tab = tab.into();
-            h.state_mut().dialog = None;
-            h.run_steps(2);
-            let wb = h.state().session.active().unwrap().wb.clone();
-            click_at(&mut h, rect.center());
-            if h.state().dialog.is_some() {
-                h.key_press(Key::Enter);
-                h.run_steps(3);
-            }
-            let doc = h.state().session.active().unwrap();
-            assert!(doc.undo.is_empty(), "{tab} control at {rect:?}: it left an undo step");
-            assert!(!doc.is_dirty(), "{tab} control at {rect:?}: it made the document dirty");
-            if off {
-                let journal: Vec<_> = h.state().session.journal.iter().rev().take(3).map(|(id, _)| id.clone()).collect();
-                assert!(std::sync::Arc::ptr_eq(&wb, &doc.wb), "{tab} control at {rect:?}: a washed-out control changed the workbook (last commands {journal:?}, dialog {:?})", h.state().dialog.as_ref().map(|d| d.name.clone()));
-                washed += 1;
-            }
-            pressed += 1;
-            h.key_press(Key::Escape);
-            h.key_press(Key::Escape);
-            h.state_mut().dialog = None;
-            h.run_steps(2);
-        }
+        let (p, w) = press_tab(&mut h, tab, None);
+        pressed += p;
+        washed += w;
     }
     assert!(pressed > 100 && washed > 60, "pressed {pressed} controls, {washed} of them washed out");
+}
+
+/// The tabs that appear with the selection (a table cell, a chart) are read-only too.
+#[test]
+fn the_table_and_chart_design_tabs_of_a_read_only_workbook_are_inert_and_washed_out() {
+    let (mut h, inbox, _) = harness();
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx_table_chart()));
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![], view: read_only() });
+    h.run_steps(4);
+    let chart = h.state().session.active().unwrap().wb.active().unwrap().charts.first().map(|c| c.id);
+    assert!(chart.is_some(), "the test workbook has a chart");
+    let (p, w) = press_tab(&mut h, "Table Design", None);
+    assert!(p >= 3 && w >= 3, "Table Design: pressed {p}, washed out {w}");
+    let (p, w) = press_tab(&mut h, "Chart Design", chart);
+    assert!(p >= 3 && w >= 3, "Chart Design: pressed {p}, washed out {w}");
 }

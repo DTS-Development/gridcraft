@@ -118,6 +118,9 @@ pub fn finish_dimming(ui: &Ui) -> (Vec<String>, RibbonControls) {
         let name = state.named.iter().find(|(r, _)| r.contains(rect.center())).map(|(_, tip)| tip.clone());
         dimmed.push(name.unwrap_or_else(|| format!("widget@{:.0},{:.0} {:.0}x{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height())));
     }
+    // Stop recording: nothing else drawn in this layer (formula bar, tabs, panes) belongs to the ribbon,
+    // and a frame without a ribbon must not keep growing the lists.
+    ui.ctx().data_mut(|d| d.insert_temp(dimming_id(), Dimming::default()));
     (dimmed, controls)
 }
 

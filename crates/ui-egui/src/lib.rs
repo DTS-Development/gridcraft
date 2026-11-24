@@ -352,6 +352,8 @@ pub struct SheetApp {
     pub ribbon_dimmed: Vec<String>,
     /// Every control of the ribbon drawn in the last frame of a read-only document, and whether it is washed out.
     pub ribbon_controls: Vec<(egui::Rect, bool)>,
+    /// The last ribbon drawn was wider than its card (some controls are scrolled out of sight).
+    pub ribbon_overflow: bool,
     /// A host open waiting behind a password prompt: the policy to put back if the prompt is cancelled
     /// (`Some(None)`: the open had options but the app had no policy before).
     pub password_restore: Option<Option<Vec<(String, bool)>>>,
@@ -418,6 +420,7 @@ impl SheetApp {
             open_queue: Default::default(),
             ribbon_dimmed: Vec::new(),
             ribbon_controls: Vec::new(),
+            ribbon_overflow: false,
             password_restore: None,
             control_rx: None,
             grid: grid::GridState {
@@ -1341,6 +1344,8 @@ impl SheetApp {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
                     self.backstage = None;
+                    // A header being edited in the earlier document must not be written into this one.
+                    paper_view::cancel(self);
                     self.show_open_warnings(&r);
                 }
                 Err(e) if e.contains(gridcraft_engine::io::PASSWORD_REQUIRED) => {
@@ -1638,12 +1643,14 @@ fn read_only_dims(id: &str) -> bool {
         "formulas.dateTime",
         "formulas.financial",
         "formulas.logical",
+        "formulas.lookup",
         "formulas.lookupReference",
         "formulas.mathTrig",
         "formulas.moreFunctions",
         "formulas.recentlyUsed",
         "formulas.text",
         "insert.chartRecommendations",
+        "insert.recommendedCharts",
     ];
     if KEEP.contains(&id) {
         return false;

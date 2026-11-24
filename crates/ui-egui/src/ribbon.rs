@@ -248,11 +248,12 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             ui.painter().rect_stroke(card, 10.0, Stroke::new(1.0, t.ribbon_border), StrokeKind::Inside);
             let inner = card.shrink2(vec2(10.0, 6.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                let scroll = egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
-                        // A read-only document: record the controls so the ones that edit are washed out.
-                        crate::widgets::begin_dimming(ui, app.session.read_only(), card);
+                        // A read-only document of a host-locked app (the only place `switched_off` washes
+                        // controls): record the controls so the ones that edit are washed out.
+                        crate::widgets::begin_dimming(ui, app.session.read_only() && app.host_locked(), card);
                         match app.ui.ribbon_tab.as_str() {
                             "Home" => home(app, ui),
                             "Insert" => insert(app, ui),
@@ -271,6 +272,8 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                         (app.ribbon_dimmed, app.ribbon_controls) = crate::widgets::finish_dimming(ui);
                     });
                 });
+                // Controls scrolled out of the card are out of sight (and of the washing): tests watch for it.
+                app.ribbon_overflow = scroll.content_size.x > scroll.inner_rect.width() + 0.5;
             });
         });
 }
