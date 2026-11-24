@@ -401,3 +401,21 @@ fn the_table_and_chart_design_tabs_of_a_read_only_workbook_are_inert_and_washed_
     let (p, w) = press_tab(&mut h, "Chart Design", chart);
     assert!(p >= 3 && w >= 3, "Chart Design: pressed {p}, washed out {w}");
 }
+
+/// An editable document keeps its labels as they were: a command the host switched off dims the icon alone;
+/// only a read-only document washes the text label (Wrap Text, Merge & Center) too.
+#[test]
+fn an_editable_document_keeps_its_labels_while_a_read_only_one_washes_them() {
+    let off = vec![("home.wrapText".to_string(), false), ("home.mergeCenter".to_string(), false)];
+    for (view, washed) in [(ViewOptions::default(), false), (read_only(), true)] {
+        let (mut h, inbox, _) = harness();
+        h.state_mut().open_queue.push_back(HostOpen { overrides: off.clone(), view });
+        inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+        h.run_steps(4);
+        let app = h.state();
+        for id in ["home.wrapText", "home.mergeCenter"] {
+            assert!(app.switched_off(id), "{id} is switched off");
+            assert_eq!(app.label_washed(id), washed, "{id}: the label is washed only in a read-only document");
+        }
+    }
+}

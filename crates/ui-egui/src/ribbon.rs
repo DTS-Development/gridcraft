@@ -773,7 +773,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 act(app, "home.wrapText", json!({}));
             }
             let label = ui.label(egui::RichText::new(app.ui.language.tr("Wrap Text")).font(theme::ui_font(12.5)));
-            crate::widgets::wash_label(ui, label.rect, app.switched_off("home.wrapText"));
+            crate::widgets::wash_label(ui, label.rect, app.label_washed("home.wrapText"));
         });
         ui.horizontal(|ui| {
             for (icon, h, id, tip) in [
@@ -805,7 +805,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 act(app, "home.mergeCenter", json!({}));
             }
             let label = ui.label(egui::RichText::new(app.ui.language.tr("Merge & Center")).font(theme::ui_font(12.5)));
-            crate::widgets::wash_label(ui, label.rect, app.switched_off("home.mergeCenter"));
+            crate::widgets::wash_label(ui, label.rect, app.label_washed("home.mergeCenter"));
             egui::Popup::menu(&ma).show(|ui| {
                 menu_items(
                     app,

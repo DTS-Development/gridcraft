@@ -488,6 +488,12 @@ impl SheetApp {
         self.host_locked() && ((host_lock::grade(id).is_some() && !self.allowed(id)) || read_only_off)
     }
 
+    /// Is the text label beside a control washed out too? Only in a read-only document: an editable one
+    /// keeps its labels as they were (the host-lock switch dims the icon alone).
+    pub fn label_washed(&self, id: &str) -> bool {
+        self.session.read_only() && self.switched_off(id)
+    }
+
     /// May the File tab show `page`? Options stays; Info (properties and Protect Workbook) and
     /// Home, New and Open (the start screens) are not for a host-locked app; Save As, Print and
     /// Export need their commands.
