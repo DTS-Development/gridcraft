@@ -157,4 +157,7 @@ fn opening_a_link_is_left_to_the_host_policy() {
     let wb = s.active().unwrap().wb.clone();
     s.execute("link.open", json!({"url": "Sheet1!A1"})).expect("an in-workbook link is followed");
     assert!(std::sync::Arc::ptr_eq(&wb, &s.active().unwrap().wb));
+    // Declared undoable, yet it leaves no history and no dirty mark behind.
+    assert!(s.active().unwrap().undo.is_empty(), "following a link records no undo step");
+    assert!(!s.active().unwrap().is_dirty());
 }
