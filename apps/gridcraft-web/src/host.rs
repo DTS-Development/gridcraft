@@ -1,9 +1,17 @@
 //! The `postMessage` bridge to a same-origin parent page (`?host=parent`), for pages that embed
 //! GridCraft in an `<iframe>` (such as a Nextcloud app). Messages are plain objects with a `type`:
 //!
-//! - `gridcraft:ready` (to the parent): `{ version }`, the app is listening; send a file now.
-//! - `gridcraft:open` (from the parent): `{ name, bytes, policy }`, bytes an `ArrayBuffer`
-//!   or `Uint8Array`. It opens like a workbook picked with File › Open or dropped on the window.
+//! - `gridcraft:ready` (to the parent): `{ version, openOptions }`, the app is listening; send a file now.
+//!   `openOptions` lists the open options this build understands (`readOnly`, `chrome`, `zoomControls`);
+//!   an older build has none and would open a workbook editable whatever it was asked for.
+//! - `gridcraft:open` (from the parent): `{ name, bytes, policy, readOnly, chrome, zoomControls }`, bytes an
+//!   `ArrayBuffer` or `Uint8Array`. It opens like a workbook picked with File › Open or dropped on the window.
+//!   The three options belong to that workbook and are booleans (anything else counts as left out; an open
+//!   without them is the plain editor): `readOnly` lets nothing edit it and nothing save it (the parent hears
+//!   no `dirty`, and `request-bytes` with purpose `save` is answered `bytes-failed` with `read-only`);
+//!   `chrome: false` hides the title bar, ribbon, formula bar, status bar and task panes and the ways to
+//!   write comments and notes (the sheet tabs stay); `zoomControls` (default true) keeps the zoom buttons
+//!   when the chrome is hidden. Each option takes effect with the file it came with, never on another.
 //!   `policy` is `{ overrides: { "<command id>": true | false } }` with the commands that differ
 //!   from their grade (see `commands.json`); in the PPM build `true` turns an off command on and
 //!   `false` an on command off. A missing or malformed policy changes nothing; ids that are no
@@ -159,8 +167,8 @@ impl Bridge {
     pub fn post_ready(&self) {
         // The open options this build understands: a host that asks for one that is missing here (an
         // older build) is turned away instead of getting a workbook it can still edit.
-        let features: js_sys::Array = crate::gate::OPEN_FEATURES.iter().map(|f| JsValue::from_str(f)).collect();
-        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("features", features.into())]);
+        let options: js_sys::Array = crate::gate::OPEN_OPTIONS.iter().map(|f| JsValue::from_str(f)).collect();
+        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("openOptions", options.into())]);
     }
 
     pub fn post_failed(&self, error: &str) {
