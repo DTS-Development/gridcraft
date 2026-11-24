@@ -2904,6 +2904,11 @@ fn context_menu(app: &mut SheetApp, ui: &mut egui::Ui) {
             if let Some(item) = insert_copied {
                 items.insert(6, item);
             }
+            // A read-only document's menu only copies; a document whose chrome the host hid has no
+            // way to write comments or notes.
+            let (read_only, chrome) = (app.session.read_only(), app.session.active().is_none_or(|d| d.view.chrome));
+            items.retain(|(_, id)| if read_only { *id == "edit.copy" } else { chrome || !matches!(*id, "ui:newComment" | "ui:newNote") });
+            items.dedup_by(|a, b| a.0 == "-" && b.0 == "-");
             let lang = crate::i18n::current(ui.ctx());
             for (label, id) in items {
                 if label == "-" {

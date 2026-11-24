@@ -895,6 +895,10 @@ impl SheetApp {
             self.message = Some(("Text Box".into(), clean_error(&e)));
             return;
         }
+        // Comments and notes are written in the chrome the host hid.
+        if name == "comment" && self.session.active().is_some_and(|d| !d.view.chrome) {
+            return;
+        }
         if self.host_locked() && (DIALOGS_LOCKED.contains(&name) || dialog_switch(name, &params).is_some_and(|c| !self.allowed(c))) {
             return;
         }
@@ -1415,8 +1419,11 @@ impl SheetApp {
                 }
             }
             tabs::sheet_tabs(self, ui);
-            pivot_pane::show(self, ui);
-            panes::show(self, ui);
+            // The task panes (comments, pivot fields, watch, selection) edit the workbook: part of the chrome.
+            if chrome {
+                pivot_pane::show(self, ui);
+                panes::show(self, ui);
+            }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.grid_bg)).show(ui, |ui| {
                 let g0 = now_ms();
                 grid::show(self, ui);

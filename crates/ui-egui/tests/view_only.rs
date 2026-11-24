@@ -155,12 +155,17 @@ fn an_open_without_options_is_the_plain_editor_again() {
 #[test]
 fn a_failed_open_keeps_the_earlier_document_as_it_was() {
     let (mut h, inbox, _) = harness();
-    host_open(&mut h, &inbox, read_only());
-    h.state_mut().open_queue.push_back(HostOpen::default());
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), true)], view: read_only() });
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+    h.run_steps(4);
+    let before = h.state().session.host_policy().unwrap().overrides();
+    assert_eq!(before, vec![("file.print".to_string(), true)]);
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), false), ("home.bold".into(), false)], view: ViewOptions::default() });
     inbox.lock().unwrap().push(("broken.xlsx".into(), b"PK\x03\x04 not really a workbook".to_vec()));
     h.run_steps(4);
     assert_eq!(h.state().session.documents().len(), 1);
     assert!(h.state().session.read_only(), "the document that stayed open keeps its options");
+    assert_eq!(h.state().session.host_policy().unwrap().overrides(), before, "the policy of the failed open is put back");
 }
 
 #[test]
@@ -174,4 +179,39 @@ fn chrome_false_hides_the_editing_chrome_and_keeps_the_sheet_tabs_and_zoom() {
     assert!(h.query_by_label("100%").is_some(), "the zoom buttons stay");
     host_open(&mut h, &inbox, ViewOptions { chrome: false, zoom_controls: false, ..ViewOptions::default() });
     assert!(h.query_by_label("100%").is_none(), "zoomControls false removes them");
+}
+
+#[test]
+fn a_read_only_workbook_opens_no_text_box_editor() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    let id = h.state_mut().session.run("insert.textBox", json!({"text": "hi"})).unwrap()["shape"].as_u64().unwrap() as u32;
+    h.state_mut().session.active_mut().unwrap().view.read_only = true;
+    assert!(!h.state_mut().begin_text_box_edit(id));
+    assert!(h.state().text_box_editor.is_none());
+    h.state_mut().session.active_mut().unwrap().view.read_only = false;
+    assert!(h.state_mut().begin_text_box_edit(id), "the same shape of a plain document does open");
+}
+
+#[test]
+fn chrome_false_alone_leaves_editing_but_not_comments() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions { chrome: false, ..ViewOptions::default() });
+    assert!(!h.state().session.read_only());
+    // Typing edits (readOnly was not asked for) ...
+    click_cell(&mut h, "B2", 1);
+    h.input_mut().events.push(Event::Text("x".into()));
+    h.run_steps(3);
+    assert!(h.state().editor.is_some());
+    // ... but there is no way to write a comment or a note, and no task pane.
+    h.state_mut().open_dialog("comment", json!({"threaded": true}));
+    h.state_mut().open_dialog("comment", json!({"threaded": false}));
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none(), "the comment dialog must not open");
+    h.state_mut().session.comments_pane = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("Comments").is_none(), "the comments pane must stay hidden");
+    h.state_mut().session.active_mut().unwrap().view.chrome = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("Comments").is_some(), "the same pane shows once the chrome is back");
 }

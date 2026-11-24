@@ -107,3 +107,16 @@ fn a_session_with_no_options_is_unchanged() {
     s.execute("cell.set", json!({"cell": "A1", "input": "x"})).unwrap();
     assert!(s.active().unwrap().is_dirty());
 }
+
+#[test]
+fn a_host_policy_cannot_turn_an_edit_back_on() {
+    let mut s = Session::new();
+    s.lock_host();
+    // The parent switches on commands that are off by default; none of them is an edit it may force.
+    s.set_policy(&[("file.saveAs".to_string(), true), ("data.getData".to_string(), true), ("home.bold".to_string(), true)]);
+    open(&mut s, Some(read_only()));
+    for id in ["home.bold", "file.saveAs", "data.getData", "edit.paste"] {
+        assert!(matches!(s.execute(id, json!({})), Err(EngineError::ReadOnly(_) | EngineError::HostLocked(_))), "`{id}` must stay refused");
+    }
+    assert!(s.active().unwrap().undo.is_empty());
+}

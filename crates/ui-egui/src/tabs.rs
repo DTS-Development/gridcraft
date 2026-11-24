@@ -357,30 +357,6 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{navigator_items, rename_needs_focus};
-    use gridcraft_engine::model::{Sheet, Visibility};
-    use std::sync::Arc;
-
-    #[test]
-    fn rename_field_takes_focus_once_and_lets_go_on_commit() {
-        assert!(rename_needs_focus(false, false), "first frame: grab focus");
-        assert!(!rename_needs_focus(true, false), "already focused: do not ask again");
-        assert!(!rename_needs_focus(false, true), "Enter or click-away: must not take focus back");
-    }
-
-    #[test]
-    fn navigator_lists_visible_sheets_by_workbook_index() {
-        let mut hidden = Sheet::new("Hidden");
-        hidden.visibility = Visibility::Hidden;
-        let mut very_hidden = Sheet::new("VeryHidden");
-        very_hidden.visibility = Visibility::VeryHidden;
-        let sheets = [Sheet::new("Data"), hidden, very_hidden, Sheet::new("Summary")].map(Arc::new);
-        assert_eq!(navigator_items(&sheets), vec![("0".to_string(), "Data".to_string()), ("3".to_string(), "Summary".to_string())]);
-    }
-}
-
 /// The zoom buttons a document with its chrome hidden keeps (`zoomControls`): [-] 100% [+] over the
 /// bottom right corner of the grid, running the same `view.zoom` as the status bar.
 pub fn zoom_overlay(app: &mut SheetApp, ctx: &egui::Context) {
@@ -417,4 +393,28 @@ pub fn zoom_overlay(app: &mut SheetApp, ctx: &egui::Context) {
                     });
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{navigator_items, rename_needs_focus};
+    use gridcraft_engine::model::{Sheet, Visibility};
+    use std::sync::Arc;
+
+    #[test]
+    fn rename_field_takes_focus_once_and_lets_go_on_commit() {
+        assert!(rename_needs_focus(false, false), "first frame: grab focus");
+        assert!(!rename_needs_focus(true, false), "already focused: do not ask again");
+        assert!(!rename_needs_focus(false, true), "Enter or click-away: must not take focus back");
+    }
+
+    #[test]
+    fn navigator_lists_visible_sheets_by_workbook_index() {
+        let mut hidden = Sheet::new("Hidden");
+        hidden.visibility = Visibility::Hidden;
+        let mut very_hidden = Sheet::new("VeryHidden");
+        very_hidden.visibility = Visibility::VeryHidden;
+        let sheets = [Sheet::new("Data"), hidden, very_hidden, Sheet::new("Summary")].map(Arc::new);
+        assert_eq!(navigator_items(&sheets), vec![("0".to_string(), "Data".to_string()), ("3".to_string(), "Summary".to_string())]);
+    }
 }
