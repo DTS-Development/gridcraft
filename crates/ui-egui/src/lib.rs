@@ -350,6 +350,8 @@ pub struct SheetApp {
     /// The ribbon controls washed out in the last frame (command ids, or tooltips of unnamed controls): a
     /// read-only document's edit buttons. Empty for an editable document.
     pub ribbon_dimmed: Vec<String>,
+    /// Every control of the ribbon drawn in the last frame of a read-only document, and whether it is washed out.
+    pub ribbon_controls: Vec<(egui::Rect, bool)>,
     /// A host open waiting behind a password prompt: the policy to put back if the prompt is cancelled
     /// (`Some(None)`: the open had options but the app had no policy before).
     pub password_restore: Option<Option<Vec<(String, bool)>>>,
@@ -415,6 +417,7 @@ impl SheetApp {
             synthetic: Default::default(),
             open_queue: Default::default(),
             ribbon_dimmed: Vec::new(),
+            ribbon_controls: Vec::new(),
             password_restore: None,
             control_rx: None,
             grid: grid::GridState {
@@ -469,8 +472,8 @@ impl SheetApp {
     /// Is `id` a command of the host-locked app that is off now (so its control is shown dimmed)?
     pub fn switched_off(&self, id: &str) -> bool {
         // A read-only document refuses its edit commands (silently), so their buttons are washed out too.
-        let read_only_refused = self.session.read_only() && gridcraft_engine::hostlock::READ_ONLY_BLOCKED.binary_search(&id).is_ok();
-        self.host_locked() && ((host_lock::grade(id).is_some() && !self.allowed(id)) || read_only_refused)
+        let read_only_off = self.session.read_only() && read_only_dims(id);
+        self.host_locked() && ((host_lock::grade(id).is_some() && !self.allowed(id)) || read_only_off)
     }
 
     /// May the File tab show `page`? Options stays; Info (properties and Protect Workbook) and
@@ -1620,4 +1623,33 @@ mod pending_edit_tests {
         app.begin_edit(Some("6".into()), false);
         assert_eq!(cell_text(&app).as_deref(), Some("6"), "an allowed input counts");
     }
+}
+
+/// Whether the ribbon control named `id` is washed out in a read-only document: anything that is not a
+/// command a read-only document runs, and the buttons that only open a menu or dialog to edit with
+/// (function libraries, names, sort, comments, charts...). The title bar's own controls stay.
+fn read_only_dims(id: &str) -> bool {
+    /// Title-bar controls that are not commands.
+    const KEEP: &[&str] = &["about", "agents", "commandSearch", "comments", "journal", "start", "statistics"];
+    /// Dialogs that only look or move: nothing in them edits the workbook.
+    const KEEP_DIALOGS: &[&str] = &["accessibility", "errorChecking", "evaluateFormula", "find", "goTo", "goToSpecial", "spelling", "zoom"];
+    /// Allowed commands whose ribbon button opens a menu that inserts.
+    const INSERTERS: &[&str] = &[
+        "formulas.dateTime",
+        "formulas.financial",
+        "formulas.logical",
+        "formulas.lookupReference",
+        "formulas.mathTrig",
+        "formulas.moreFunctions",
+        "formulas.recentlyUsed",
+        "formulas.text",
+        "insert.chartRecommendations",
+    ];
+    if KEEP.contains(&id) {
+        return false;
+    }
+    if let Some(dialog) = id.strip_prefix("dialog:") {
+        return !KEEP_DIALOGS.contains(&dialog);
+    }
+    INSERTERS.contains(&id) || !gridcraft_engine::hostlock::read_only_permits(id)
 }

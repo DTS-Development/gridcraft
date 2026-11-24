@@ -428,6 +428,8 @@ impl Session {
             && let Some((uid, wb, sel)) = before
             && let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid)
             && !Arc::ptr_eq(&d.wb, &wb)
+            // A read-only document keeps no history: what it still changes is how it is shown.
+            && !d.view.read_only
         {
             d.undo.push(HistoryEntry { label: spec.label.trim_end_matches('…').to_string(), wb, selection: sel });
             if d.undo.len() > UNDO_LIMIT {

@@ -16,14 +16,21 @@ fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
 
 // Read-only ribbon: which controls were drawn, and which of them were dimmed. A document the host
 // opened read-only refuses its edit commands, so the buttons that run them are washed out.
-// `begin_dimming` arms it for one ribbon frame; every control this module draws is recorded, and the
-// ones no `control_keytip` vouched for (it names the command) are dimmed by `finish_dimming`.
+// `begin_dimming` arms it for one ribbon frame. Every clickable widget egui laid out in the ribbon is a
+// control: one a `control_keytip` named (`note_command`) is dimmed by its command, any other is dimmed
+// by `finish_dimming`, so a control added later is washed out until someone vouches for it.
 
 #[derive(Clone, Default)]
 struct Dimming {
     layer: Option<egui::LayerId>,
-    seen: Vec<(Rect, String)>,
-    handled: Vec<Rect>,
+    /// The ribbon card: widgets outside it (the tab row) are not ribbon controls.
+    area: Option<Rect>,
+    /// Tooltips of the controls this module drew, to name what is dimmed.
+    named: Vec<(Rect, String)>,
+    /// Split buttons: (arrow, whole button). The arrow is the part a keytip names.
+    wholes: Vec<(Rect, Rect)>,
+    /// Controls a command named, and whether it washed them out.
+    handled: Vec<(Rect, bool)>,
     dimmed: Vec<String>,
 }
 
@@ -32,52 +39,86 @@ fn dimming_id() -> egui::Id {
 }
 
 /// Starts (`on`) or stops recording the controls drawn in `ui` this frame.
-pub fn begin_dimming(ui: &Ui, on: bool) {
-    let state = Dimming { layer: on.then(|| ui.layer_id()), ..Dimming::default() };
+pub fn begin_dimming(ui: &Ui, on: bool, area: Rect) {
+    let state = Dimming { layer: on.then(|| ui.layer_id()), area: Some(area), ..Dimming::default() };
     ui.ctx().data_mut(|d| d.insert_temp(dimming_id(), state));
 }
 
-fn with_dimming(ui: &Ui, f: impl FnOnce(&mut Dimming)) {
+fn with_dimming<R>(ui: &Ui, f: impl FnOnce(&mut Dimming) -> R) -> Option<R> {
     ui.ctx().data_mut(|d| {
-        if let Some(mut state) = d.get_temp::<Dimming>(dimming_id())
-            && state.layer == Some(ui.layer_id())
-        {
-            f(&mut state);
-            d.insert_temp(dimming_id(), state);
-        }
-    });
+        let mut state = d.get_temp::<Dimming>(dimming_id()).filter(|s| s.layer == Some(ui.layer_id()))?;
+        let out = f(&mut state);
+        d.insert_temp(dimming_id(), state);
+        Some(out)
+    })
 }
 
 fn track(ui: &Ui, resp: &Response, tip: &str) {
-    with_dimming(ui, |s| s.seen.push((resp.rect, tip.to_string())));
+    with_dimming(ui, |s| s.named.push((resp.rect, tip.to_string())));
 }
 
-/// A control that runs command `id` was drawn at `rect`; `off` says it is washed out.
+/// Washes out `rect`.
+fn wash(ui: &Ui, rect: Rect) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(rect, 3.0, t.ribbon.gamma_multiply(0.7));
+}
+
+/// A control that runs command `id` was drawn at `rect`; `off` says it is washed out (and washes it).
 pub fn note_command(ui: &Ui, rect: Rect, id: &str, off: bool) {
-    with_dimming(ui, |s| {
-        s.handled.push(rect);
+    let whole = with_dimming(ui, |s| {
+        let whole = s.wholes.iter().find(|(arrow, _)| *arrow == rect).map_or(rect, |(_, whole)| *whole);
+        s.handled.push((whole, off));
         if off {
             s.dimmed.push(id.to_string());
         }
-    });
+        whole
+    })
+    .unwrap_or(rect);
+    if off {
+        wash(ui, whole);
+    }
 }
 
-/// Washes out the recorded controls no command vouched for; returns what ended up dimmed (command
-/// ids and the tooltips of the unnamed controls).
-pub fn finish_dimming(ui: &Ui) -> Vec<String> {
+/// Washes out a label drawn beside a control (`rect`), as the control is.
+pub fn wash_label(ui: &Ui, rect: Rect, off: bool) {
+    if off {
+        wash(ui, rect);
+    }
+}
+
+/// Every control of the ribbon drawn this frame: where, and whether it was washed out.
+pub type RibbonControls = Vec<(Rect, bool)>;
+
+/// Washes out the clickable widgets of the ribbon no command vouched for. Returns what ended up dimmed
+/// (command ids, and tooltips or positions of the unnamed controls) and every control with its state.
+pub fn finish_dimming(ui: &Ui) -> (Vec<String>, RibbonControls) {
     let Some(state) = ui.ctx().data(|d| d.get_temp::<Dimming>(dimming_id())).filter(|s| s.layer == Some(ui.layer_id())) else {
-        return Vec::new();
+        return Default::default();
     };
-    let t = Tokens::get(ui.ctx());
+    let clip = ui.clip_rect().intersect(state.area.unwrap_or(Rect::NOTHING));
+    // Buttons, checkboxes and combos only: the scroll area and other panels have far bigger rects, and
+    // a label (also clickable, to select its text) is under 18 high.
+    let drawn: Vec<Rect> = ui.ctx().viewport(|v| {
+        v.this_pass
+            .widgets
+            .get_layer(ui.layer_id())
+            .filter(|w| w.sense.senses_click() && w.rect.intersects(clip) && w.rect.width() < 260.0 && (18.0..=80.0).contains(&w.rect.height()))
+            .map(|w| w.rect)
+            .collect()
+    });
     let mut dimmed = state.dimmed.clone();
-    for (rect, tip) in &state.seen {
-        if state.handled.iter().any(|h| h.contains(rect.center())) {
+    let mut controls = RibbonControls::new();
+    for rect in drawn {
+        if let Some((_, off)) = state.handled.iter().find(|(h, _)| h.contains(rect.center())) {
+            controls.push((rect, *off));
             continue;
         }
-        ui.painter().rect_filled(*rect, 3.0, t.ribbon.gamma_multiply(0.7));
-        dimmed.push(tip.clone());
+        wash(ui, rect);
+        controls.push((rect, true));
+        let name = state.named.iter().find(|(r, _)| r.contains(rect.center())).map(|(_, tip)| tip.clone());
+        dimmed.push(name.unwrap_or_else(|| format!("widget@{:.0},{:.0} {:.0}x{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height())));
     }
-    dimmed
+    (dimmed, controls)
 }
 
 /// A flat square icon button with hover highlight and tooltip.
@@ -193,6 +234,7 @@ pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, tip: &str)
     }
     icons::paint(ui.painter(), Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)), Icon::Chevron, t.text_dim);
     track(ui, &m.union(a.clone()), tip);
+    with_dimming(ui, |s| s.wholes.push((a.rect, rect)));
     (m.on_hover_text(tr(ui, tip)).clicked(), a)
 }
 

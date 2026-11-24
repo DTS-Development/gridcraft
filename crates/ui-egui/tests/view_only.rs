@@ -33,7 +33,7 @@ fn harness() -> (Harness, Inbox, Downloads) {
     };
     let mut session = Session::new();
     session.lock_host();
-    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1800.0, 800.0)).build_ui_state(
         |ui, app: &mut SheetApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -265,8 +265,8 @@ fn a_read_only_ribbon_washes_out_every_edit_button_and_pressing_them_changes_not
     let expect = [
         // (tab, buttons that are washed out, buttons that stay bright)
         ("Home", &["edit.cut", "home.bold", "home.fontName", "home.mergeCenter", "home.fillColor", "home.alignTop",
-            "Paste (⌘V)", "Align Left", "Center", "Merge & Center", "Insert", "Delete", "Format", "Fill", "Clear", "Sort & Filter",
-            "Conditional Formatting", "Format as Table", "Cell Styles", "AutoSum (⌘⇧T)"][..], &["edit.copy", "Find & Select"][..]),
+            "Paste (⌘V)", "Align Left", "Center", "Insert", "Delete", "Format", "Fill", "Clear", "Sort & Filter",
+            "Conditional Formatting", "Format as Table", "Cell Styles", "formulas.autoSum"][..], &["edit.copy", "Find & Select"][..]),
         ("Insert", &["insert.table", "insert.textBox", "Shapes", "Insert a picture"][..], &[][..]),
         ("Data", &["data.sortAscending", "data.filter", "Data Validation"][..], &[][..]),
         ("Formulas", &["formulas.autoSum", "Use in Formula"][..], &["Trace Precedents", "Trace Dependents", "Remove Arrows", "Watch Window"][..]),
@@ -297,4 +297,56 @@ fn a_read_only_ribbon_washes_out_every_edit_button_and_pressing_them_changes_not
     host_open(&mut h, &inbox, ViewOptions::default());
     h.run_steps(3);
     assert!(h.state().ribbon_dimmed.is_empty(), "an open without options washes nothing out");
+}
+
+fn click_at(h: &mut Harness, pos: egui::Pos2) {
+    h.event(Event::PointerMoved(pos));
+    h.run_steps(2);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+    }
+    h.run_steps(2);
+}
+
+/// The whole ribbon of a read-only workbook, tab by tab and control by control (the list comes from what
+/// the ribbon really drew): each control is pressed, a dialog it opens is confirmed with Enter, and
+/// nothing reaches the workbook, its undo history or its dirty flag. The edit controls are all washed out.
+#[test]
+fn every_ribbon_control_of_a_read_only_workbook_is_inert_and_the_edit_ones_are_washed_out() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, read_only());
+    let mut pressed = 0;
+    let mut washed = 0;
+    for tab in ["Home", "Insert", "Draw", "Page Layout", "Formulas", "Data", "Review", "View", "Automate"] {
+        h.state_mut().ui.ribbon_tab = tab.into();
+        h.run_steps(3);
+        let controls = h.state().ribbon_controls.clone();
+        assert!(!controls.is_empty() || tab == "Automate", "{tab}: the ribbon drew no controls");
+        for (rect, off) in controls {
+            h.state_mut().ui.ribbon_tab = tab.into();
+            h.state_mut().dialog = None;
+            h.run_steps(2);
+            let wb = h.state().session.active().unwrap().wb.clone();
+            click_at(&mut h, rect.center());
+            if h.state().dialog.is_some() {
+                h.key_press(Key::Enter);
+                h.run_steps(3);
+            }
+            let doc = h.state().session.active().unwrap();
+            assert!(doc.undo.is_empty(), "{tab} control at {rect:?}: it left an undo step");
+            assert!(!doc.is_dirty(), "{tab} control at {rect:?}: it made the document dirty");
+            if off {
+                let journal: Vec<_> = h.state().session.journal.iter().rev().take(3).map(|(id, _)| id.clone()).collect();
+                assert!(std::sync::Arc::ptr_eq(&wb, &doc.wb), "{tab} control at {rect:?}: a washed-out control changed the workbook (last commands {journal:?}, dialog {:?})", h.state().dialog.as_ref().map(|d| d.name.clone()));
+                washed += 1;
+            }
+            pressed += 1;
+            h.key_press(Key::Escape);
+            h.key_press(Key::Escape);
+            h.state_mut().dialog = None;
+            h.run_steps(2);
+        }
+    }
+    assert!(pressed > 100 && washed > 60, "pressed {pressed} controls, {washed} of them washed out");
 }
