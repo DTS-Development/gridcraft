@@ -252,3 +252,49 @@ fn chrome_false_alone_leaves_editing_but_not_comments() {
     h.run_steps(3);
     assert!(h.query_by_label("Comments").is_some(), "the same pane shows once the chrome is back");
 }
+
+/// Every ribbon button that edits is washed out in a read-only document (the ones that only look or
+/// copy are not), and pressing it changes nothing.
+#[test]
+fn a_read_only_ribbon_washes_out_every_edit_button_and_pressing_them_changes_nothing() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    assert!(h.state().ribbon_dimmed.is_empty(), "an editable document's ribbon is not washed out");
+    host_open(&mut h, &inbox, read_only());
+    let wb = h.state().session.active().unwrap().wb.clone();
+    let expect = [
+        // (tab, buttons that are washed out, buttons that stay bright)
+        ("Home", &["edit.cut", "home.bold", "home.fontName", "home.mergeCenter", "home.fillColor", "home.alignTop",
+            "Paste (⌘V)", "Align Left", "Center", "Merge & Center", "Insert", "Delete", "Format", "Fill", "Clear", "Sort & Filter",
+            "Conditional Formatting", "Format as Table", "Cell Styles", "AutoSum (⌘⇧T)"][..], &["edit.copy", "Find & Select"][..]),
+        ("Insert", &["insert.table", "insert.textBox", "Shapes", "Insert a picture"][..], &[][..]),
+        ("Data", &["data.sortAscending", "data.filter", "Data Validation"][..], &[][..]),
+        ("Formulas", &["formulas.autoSum", "Use in Formula"][..], &["Trace Precedents", "Trace Dependents", "Remove Arrows", "Watch Window"][..]),
+        ("Review", &["review.deleteComment"][..], &["Previous Comment", "Next Comment", "Comments pane"][..]),
+    ];
+    for (tab, dimmed, bright) in expect {
+        h.state_mut().ui.ribbon_tab = tab.into();
+        h.run_steps(3);
+        let got = h.state().ribbon_dimmed.clone();
+        for d in dimmed {
+            assert!(got.iter().any(|g| g == d), "{tab}: `{d}` should be washed out, got {got:?}");
+        }
+        for b in bright {
+            assert!(!got.iter().any(|g| g == b), "{tab}: `{b}` stays bright, got {got:?}");
+        }
+    }
+    // Pressing them: the commands behind the buttons are refused, and so is a click on Paste.
+    for id in ["edit.cut", "edit.paste", "home.bold", "home.alignLeft", "home.mergeCenter", "home.fillColor", "home.insertRows", "data.sortAscending", "home.numberFormat"] {
+        let err = h.state_mut().run(id, json!({})).expect_err(id);
+        assert!(err.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT), "`{id}` should be refused as read-only, got {err}");
+    }
+    h.state_mut().ui.ribbon_tab = "Home".into();
+    h.run_steps(3);
+    h.get_by_label("Paste").click();
+    h.run_steps(3);
+    assert!(std::sync::Arc::ptr_eq(&wb, &h.state().session.active().unwrap().wb), "nothing the buttons do reaches the workbook");
+    assert!(h.state().session.active().unwrap().undo.is_empty());
+    host_open(&mut h, &inbox, ViewOptions::default());
+    h.run_steps(3);
+    assert!(h.state().ribbon_dimmed.is_empty(), "an open without options washes nothing out");
+}

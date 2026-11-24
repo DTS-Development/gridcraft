@@ -14,6 +14,72 @@ fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
     i18n::current(ui.ctx()).tr(text)
 }
 
+// Read-only ribbon: which controls were drawn, and which of them were dimmed. A document the host
+// opened read-only refuses its edit commands, so the buttons that run them are washed out.
+// `begin_dimming` arms it for one ribbon frame; every control this module draws is recorded, and the
+// ones no `control_keytip` vouched for (it names the command) are dimmed by `finish_dimming`.
+
+#[derive(Clone, Default)]
+struct Dimming {
+    layer: Option<egui::LayerId>,
+    seen: Vec<(Rect, String)>,
+    handled: Vec<Rect>,
+    dimmed: Vec<String>,
+}
+
+fn dimming_id() -> egui::Id {
+    egui::Id::new("ribbon_read_only_dimming")
+}
+
+/// Starts (`on`) or stops recording the controls drawn in `ui` this frame.
+pub fn begin_dimming(ui: &Ui, on: bool) {
+    let state = Dimming { layer: on.then(|| ui.layer_id()), ..Dimming::default() };
+    ui.ctx().data_mut(|d| d.insert_temp(dimming_id(), state));
+}
+
+fn with_dimming(ui: &Ui, f: impl FnOnce(&mut Dimming)) {
+    ui.ctx().data_mut(|d| {
+        if let Some(mut state) = d.get_temp::<Dimming>(dimming_id())
+            && state.layer == Some(ui.layer_id())
+        {
+            f(&mut state);
+            d.insert_temp(dimming_id(), state);
+        }
+    });
+}
+
+fn track(ui: &Ui, resp: &Response, tip: &str) {
+    with_dimming(ui, |s| s.seen.push((resp.rect, tip.to_string())));
+}
+
+/// A control that runs command `id` was drawn at `rect`; `off` says it is washed out.
+pub fn note_command(ui: &Ui, rect: Rect, id: &str, off: bool) {
+    with_dimming(ui, |s| {
+        s.handled.push(rect);
+        if off {
+            s.dimmed.push(id.to_string());
+        }
+    });
+}
+
+/// Washes out the recorded controls no command vouched for; returns what ended up dimmed (command
+/// ids and the tooltips of the unnamed controls).
+pub fn finish_dimming(ui: &Ui) -> Vec<String> {
+    let Some(state) = ui.ctx().data(|d| d.get_temp::<Dimming>(dimming_id())).filter(|s| s.layer == Some(ui.layer_id())) else {
+        return Vec::new();
+    };
+    let t = Tokens::get(ui.ctx());
+    let mut dimmed = state.dimmed.clone();
+    for (rect, tip) in &state.seen {
+        if state.handled.iter().any(|h| h.contains(rect.center())) {
+            continue;
+        }
+        ui.painter().rect_filled(*rect, 3.0, t.ribbon.gamma_multiply(0.7));
+        dimmed.push(tip.clone());
+    }
+    dimmed
+}
+
 /// A flat square icon button with hover highlight and tooltip.
 pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egui::Vec2) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -24,6 +90,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egu
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, color);
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -38,6 +105,7 @@ pub fn toggle_button(ui: &mut Ui, icon: Icon, on: bool, tip: &str) -> Response {
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, t.text);
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -73,6 +141,7 @@ pub fn big_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: boo
             );
         }
     }
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -101,6 +170,7 @@ pub fn small_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: b
             t.text_dim,
         );
     }
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -122,6 +192,7 @@ pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, tip: &str)
         ui.painter().rect_filled(Rect::from_min_size(pos2(main.left() + 4.0, main.bottom() - 5.0), vec2(17.0, 3.0)), 0.0, c);
     }
     icons::paint(ui.painter(), Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)), Icon::Chevron, t.text_dim);
+    track(ui, &m.union(a.clone()), tip);
     (m.on_hover_text(tr(ui, tip)).clicked(), a)
 }
 

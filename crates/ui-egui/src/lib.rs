@@ -347,6 +347,9 @@ pub struct SheetApp {
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
     /// What the host's `open` messages asked for, one per file still to come through the inbox, in order.
     pub open_queue: std::collections::VecDeque<HostOpen>,
+    /// The ribbon controls washed out in the last frame (command ids, or tooltips of unnamed controls): a
+    /// read-only document's edit buttons. Empty for an editable document.
+    pub ribbon_dimmed: Vec<String>,
     /// A host open waiting behind a password prompt: the policy to put back if the prompt is cancelled
     /// (`Some(None)`: the open had options but the app had no policy before).
     pub password_restore: Option<Option<Vec<(String, bool)>>>,
@@ -411,6 +414,7 @@ impl SheetApp {
             print_feedback_seen: None,
             synthetic: Default::default(),
             open_queue: Default::default(),
+            ribbon_dimmed: Vec::new(),
             password_restore: None,
             control_rx: None,
             grid: grid::GridState {

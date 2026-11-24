@@ -251,6 +251,8 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                 egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                        // A read-only document: record the controls so the ones that edit are washed out.
+                        crate::widgets::begin_dimming(ui, app.session.read_only());
                         match app.ui.ribbon_tab.as_str() {
                             "Home" => home(app, ui),
                             "Insert" => insert(app, ui),
@@ -266,6 +268,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                             crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
                             _ => home(app, ui),
                         }
+                        app.ribbon_dimmed = crate::widgets::finish_dimming(ui);
                     });
                 });
             });
@@ -354,10 +357,12 @@ fn keytip(app: &SheetApp, ui: &Ui, sequence: &str, at: egui::Pos2) {
 fn control_keytip(app: &SheetApp, ui: &Ui, response: &egui::Response, id: &str) {
     // Host lock: a control the administrator switched off stays drawn, washed out; a click on it
     // is refused without a word by the engine.
-    if app.switched_off(id) {
+    let off = app.switched_off(id);
+    if off {
         let t = Tokens::get(ui.ctx());
         ui.painter().rect_filled(response.rect, 3.0, t.ribbon.gamma_multiply(0.7));
     }
+    crate::widgets::note_command(ui, response.rect, id, off);
     if let Some(sequence) = keytip_table::control_badge(app.keytips.prefix().unwrap_or_default(), id) {
         keytip(app, ui, sequence, response.rect.center_bottom());
     }
@@ -1068,6 +1073,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
         );
     });
     let fs = big_button(ui, Icon::Find, "Find &\nSelect", "Find & Select", true);
+    crate::widgets::note_command(ui, fs.rect, "edit.find", false);
     for sequence in keytip_table::group_extension(
         app.keytips.prefix().unwrap_or_default(),
         &["dialog:find", "dialog:goTo", "dialog:goToSpecial", "edit.goToSpecial"],
@@ -1881,17 +1887,23 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
     });
     sep(ui);
     ui.vertical(|ui| {
-        if small_button(ui, Icon::Trace, "Trace Precedents", "Trace Precedents", false).clicked()
+        let b = small_button(ui, Icon::Trace, "Trace Precedents", "Trace Precedents", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.tracePrecedents", false);
+        if b.clicked()
             && let Ok(r) = app.run("formulas.tracePrecedents", json!({}))
         {
             app.grid.trace = Some(r);
         }
-        if small_button(ui, Icon::Trace, "Trace Dependents", "Trace Dependents", false).clicked()
+        let b = small_button(ui, Icon::Trace, "Trace Dependents", "Trace Dependents", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.traceDependents", false);
+        if b.clicked()
             && let Ok(r) = app.run("formulas.traceDependents", json!({}))
         {
             app.grid.trace = Some(r);
         }
-        if small_button(ui, Icon::Close, "Remove Arrows", "Remove Arrows", false).clicked() {
+        let b = small_button(ui, Icon::Close, "Remove Arrows", "Remove Arrows", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.removeArrows", false);
+        if b.clicked() {
             app.grid.trace = None;
         }
     });
@@ -1912,7 +1924,9 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
             app.open_dialog("evaluateFormula", json!({}));
         }
     });
-    if big_button(ui, Icon::Search, "Watch\nWindow", "Watch Window", false).clicked() {
+    let b = big_button(ui, Icon::Search, "Watch\nWindow", "Watch Window", false);
+    crate::widgets::note_command(ui, b.rect, "formulas.watchWindow", false);
+    if b.clicked() {
         app.grid.pane = Some("watch".into());
     }
     sep(ui);
@@ -2108,7 +2122,9 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
         for (icon, label, tip, id) in
             [(Icon::Left, "Previous", "Previous Comment", "review.previousComment"), (Icon::Right, "Next", "Next Comment", "review.nextComment")]
         {
-            if small_button(ui, icon, label, tip, false).clicked() {
+            let b = small_button(ui, icon, label, tip, false);
+            crate::widgets::note_command(ui, b.rect, id, false);
+            if b.clicked() {
                 act(app, id, json!({}));
                 app.grid.ensure_visible = true;
             }
@@ -2116,6 +2132,7 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
     });
     let shown = app.session.comments_pane;
     let r = big_button(ui, Icon::Comment, "Show\nComments", "Comments pane", false);
+    crate::widgets::note_command(ui, r.rect, "review.showComments", false);
     if shown {
         ui.painter().rect_stroke(r.rect, 5.0, Stroke::new(2.0, Tokens::get(ui.ctx()).accent), StrokeKind::Inside);
     }
