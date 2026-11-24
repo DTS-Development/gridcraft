@@ -291,6 +291,15 @@ pub const UI_COMMANDS_ALLOWED: &[&str] = &[
 /// Dialogs a host-locked app never opens: they pick local workbooks, list files, run scripts or
 /// protect the workbook or a sheet (`review.protectWorkbook`, `review.protectSheet` and the rest are
 /// locked). `saveAs` stays: Save reaches the host through it.
+/// Dialogs whose confirmation is a command a read-only document refuses (they only edit the workbook).
+const READ_ONLY_NO_DIALOGS: &[&str] = &[
+    "allowEditRanges", "analysisToolPak", "cfQuick", "chartTitle", "columnWidth", "comment", "defineName", "deleteCells", "forecastSheet",
+    "formatCells", "importData", "insertCells", "insertFunction", "insertLink", "insertPaste", "insertPicture", "manageRules", "moveSheet",
+    "nameManager", "pageSetup", "pasteSpecial", "pickList", "protectSheet", "protectWorkbook", "recommendedCharts", "removeDuplicates",
+    "rowHeight", "selectData", "solver", "solverResults", "sort", "sparkline", "subtotal", "textToColumns", "unprotectSheet",
+    "unprotectWorkbook",
+];
+
 pub(crate) const DIALOGS_LOCKED: &[&str] =
     &["agents", "allowEditRanges", "macros", "open", "protectSheet", "protectWorkbook", "start", "unprotectSheet", "unprotectWorkbook"];
 
@@ -911,6 +920,10 @@ impl SheetApp {
             self.message = Some(("Text Box".into(), clean_error(&e)));
             return;
         }
+        // A read-only document has nothing to confirm in these: the washed-out buttons open nothing.
+        if self.session.read_only() && READ_ONLY_NO_DIALOGS.contains(&name) {
+            return;
+        }
         // Comments and notes are written in the chrome the host hid.
         if name == "comment" && self.session.active().is_some_and(|d| !d.view.chrome) {
             return;
@@ -1253,6 +1266,10 @@ impl SheetApp {
         // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
         // anything that never reached a control (collapsed ribbon, tab switch) is dropped.
         self.ui.keytip_invoke = None;
+        // A read-only document refuses quietly, in every path (a dialog's own message box included).
+        if self.message.as_ref().is_some_and(|(_, m)| m.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT)) {
+            self.message = None;
+        }
         if self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
             self.fonts_ready = false;
             self.fonts_set = false;

@@ -345,6 +345,7 @@ fn press_tab(h: &mut Harness, tab: &str, chart: Option<u32>) -> (usize, usize) {
         let wb = h.state().session.active().unwrap().wb.clone();
         let before = h.state().session.journal.len();
         click_at(h, rect.center());
+        assert!(!off || h.state().dialog.is_none(), "{tab} control at {rect:?} is washed out but opened a dialog");
         if h.state().dialog.is_some() {
             h.key_press(Key::Enter);
             h.run_steps(3);
@@ -360,6 +361,7 @@ fn press_tab(h: &mut Harness, tab: &str, chart: Option<u32>) -> (usize, usize) {
             "{tab} control at {rect:?} (washed out: {off}) changed the workbook; ran {ran:?}"
         );
         assert!(!off || ran.is_empty() || ran.iter().all(|id| VIEW_STATE.contains(&id.as_str())), "{tab} control at {rect:?} is washed out but ran {ran:?}");
+        assert!(h.state().message.is_none(), "{tab} control at {rect:?} showed a message: {:?}", h.state().message);
         washed += usize::from(off);
         pressed += 1;
         h.key_press(Key::Escape);
