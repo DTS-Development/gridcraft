@@ -643,7 +643,7 @@ impl Dialog {
             "insertFunction" => Dialog::custom("insertFunction", "Formula Builder", json!({"category": "Most Recently Used"})),
             "find" => {
                 let mut d = Dialog::custom("find", "Find and Replace", json!({"what": "", "with": "", "within": "sheet", "lookIn": "formulas"}));
-                d.tab = if p("replace").as_bool() == Some(true) { "Replace".into() } else { "Find".into() };
+                d.tab = if p("replace").as_bool() == Some(true) && !app.session.read_only() { "Replace".into() } else { "Find".into() };
                 d
             }
             "goTo" => Dialog::custom("goTo", "Go To", json!({"reference": ""})),
@@ -1297,6 +1297,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 if d.name == "solver" {
                     app.open_dialog("solverResults", r);
                 } else if d.name == "openPassword" {
+                    app.password_restore = None;
                     let path = d.values.get("path").and_then(Json::as_str).map(str::to_string);
                     app.after_open(path.as_deref(), &r);
                 }
@@ -1325,6 +1326,13 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
             child.back = d.back.take();
         }
         return;
+    }
+    if !open && d.name == "openPassword" && let Some(before) = app.password_restore.take() {
+        // The prompt was cancelled: the open that brought these options never happened.
+        app.session.set_next_view(None);
+        if let Some(before) = before {
+            app.session.set_policy(&before);
+        }
     }
     if open {
         app.dialog = Some(d);
@@ -1843,8 +1851,15 @@ fn insert_function(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confir
 
 fn find(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language;
+    // A read-only document has nothing to replace into: only the Find tab is offered.
+    let tabs: &[&str] = if app.session.read_only() {
+        d.tab = "Find".into();
+        &["Find"]
+    } else {
+        &["Find", "Replace"]
+    };
     ui.horizontal(|ui| {
-        for tab in ["Find", "Replace"] {
+        for &tab in tabs {
             if ui.selectable_label(d.tab == tab, lang.tr(tab)).clicked() {
                 d.tab = tab.into();
             }

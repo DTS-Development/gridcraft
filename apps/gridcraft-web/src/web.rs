@@ -104,7 +104,7 @@ struct WebShell {
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(bridge) = &self.bridge {
-            bridge.apply_policy(&self.app);
+            bridge.apply_opens(&mut self.app);
             #[cfg(feature = "ppm-host")]
             bridge.replace_documents(&mut self.app);
             bridge.apply_gotos(&mut self.app);

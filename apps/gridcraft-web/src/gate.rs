@@ -70,6 +70,20 @@ pub fn workbook_json(wb: &gridcraft_engine::model::Workbook) -> Result<Vec<u8>, 
     gridcraft_engine::io::save_bytes_as(wb, "workbook.json", gridcraft_engine::io::FileKind::Json).map_err(|e| e.to_string())
 }
 
+/// The open options of the host's `gridcraft:open` this build understands (sent with `gridcraft:ready`).
+pub const OPEN_OPTIONS: &[&str] = &["readOnly", "chrome", "zoomControls"];
+
+/// How a workbook is shown, from the booleans of the host's open message (`readOnly`, `chrome`,
+/// `zoomControls`). One that is not given keeps today's behaviour: editable, with the chrome and zoom.
+pub fn view_options(read_only: Option<bool>, chrome: Option<bool>, zoom_controls: Option<bool>) -> gridcraft_engine::ViewOptions {
+    let plain = gridcraft_engine::ViewOptions::default();
+    gridcraft_engine::ViewOptions {
+        read_only: read_only.unwrap_or(plain.read_only),
+        chrome: chrome.unwrap_or(plain.chrome),
+        zoom_controls: zoom_controls.unwrap_or(plain.zoom_controls),
+    }
+}
+
 /// Why a `gridcraft:request-bytes` is asked: `save` stores the workbook (it counts as saved), `check`
 /// and `preview` only read it. Anything else is no purpose.
 pub fn bytes_purpose(purpose: &str) -> Option<&'static str> {
@@ -135,7 +149,9 @@ pub fn blocks_page_default(ctrl: bool, meta: bool, alt: bool, key: &str, code: &
         return false;
     }
     let by_key = key.chars().count() == 1 && key.chars().next().is_some_and(|c| BROWSER_CLASHING_LETTERS.contains(&c.to_ascii_lowercase()));
-    let by_code = code.strip_prefix("Key").is_some_and(|l| l.chars().count() == 1 && l.chars().next().is_some_and(|c| BROWSER_CLASHING_LETTERS.contains(&c.to_ascii_lowercase())));
+    let by_code = code
+        .strip_prefix("Key")
+        .is_some_and(|l| l.chars().count() == 1 && l.chars().next().is_some_and(|c| BROWSER_CLASHING_LETTERS.contains(&c.to_ascii_lowercase())));
     by_key || by_code
 }
 
@@ -264,6 +280,16 @@ mod tests {
         assert!(same_origin(Some("https://ppm.example"), "https://ppm.example"));
         assert!(!same_origin(Some("https://evil.example"), "https://ppm.example"));
         assert!(!same_origin(None, "https://ppm.example"), "the browser refused to say");
+    }
+
+    #[test]
+    fn view_options_default_to_the_plain_editor_and_take_only_what_is_given() {
+        use gridcraft_engine::ViewOptions;
+        assert_eq!(view_options(None, None, None), ViewOptions::default());
+        assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls"], "the names the host's open message uses");
+        assert_eq!(view_options(None, None, None), ViewOptions { read_only: false, chrome: true, zoom_controls: false });
+        assert_eq!(view_options(Some(true), None, None), ViewOptions { read_only: true, chrome: true, zoom_controls: false });
+        assert_eq!(view_options(Some(true), Some(false), Some(false)), ViewOptions { read_only: true, chrome: false, zoom_controls: false });
     }
 
     #[test]

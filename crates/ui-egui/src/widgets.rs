@@ -14,6 +14,116 @@ fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
     i18n::current(ui.ctx()).tr(text)
 }
 
+// Read-only ribbon: which controls were drawn, and which of them were dimmed. A document the host
+// opened read-only refuses its edit commands, so the buttons that run them are washed out.
+// `begin_dimming` arms it for one ribbon frame. Every clickable widget egui laid out in the ribbon is a
+// control: one a `control_keytip` named (`note_command`) is dimmed by its command, any other is dimmed
+// by `finish_dimming`, so a control added later is washed out until someone vouches for it.
+
+#[derive(Clone, Default)]
+struct Dimming {
+    layer: Option<egui::LayerId>,
+    /// The ribbon card: widgets outside it (the tab row) are not ribbon controls.
+    area: Option<Rect>,
+    /// Tooltips of the controls this module drew, to name what is dimmed.
+    named: Vec<(Rect, String)>,
+    /// Split buttons: (arrow, whole button). The arrow is the part a keytip names.
+    wholes: Vec<(Rect, Rect)>,
+    /// Controls a command named, and whether it washed them out.
+    handled: Vec<(Rect, bool)>,
+    dimmed: Vec<String>,
+}
+
+fn dimming_id() -> egui::Id {
+    egui::Id::new("ribbon_read_only_dimming")
+}
+
+/// Starts (`on`) or stops recording the controls drawn in `ui` this frame.
+pub fn begin_dimming(ui: &Ui, on: bool, area: Rect) {
+    let state = Dimming { layer: on.then(|| ui.layer_id()), area: Some(area), ..Dimming::default() };
+    ui.ctx().data_mut(|d| d.insert_temp(dimming_id(), state));
+}
+
+fn with_dimming<R>(ui: &Ui, f: impl FnOnce(&mut Dimming) -> R) -> Option<R> {
+    ui.ctx().data_mut(|d| {
+        let mut state = d.get_temp::<Dimming>(dimming_id()).filter(|s| s.layer == Some(ui.layer_id()))?;
+        let out = f(&mut state);
+        d.insert_temp(dimming_id(), state);
+        Some(out)
+    })
+}
+
+fn track(ui: &Ui, resp: &Response, tip: &str) {
+    with_dimming(ui, |s| s.named.push((resp.rect, tip.to_string())));
+}
+
+/// Washes out `rect`.
+fn wash(ui: &Ui, rect: Rect) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(rect, 3.0, t.ribbon.gamma_multiply(0.7));
+}
+
+/// A control that runs command `id` was drawn at `rect`; `off` says it is washed out (and washes it).
+pub fn note_command(ui: &Ui, rect: Rect, id: &str, off: bool) {
+    let whole = with_dimming(ui, |s| {
+        let whole = s.wholes.iter().find(|(arrow, _)| *arrow == rect).map_or(rect, |(_, whole)| *whole);
+        s.handled.push((whole, off));
+        if off {
+            s.dimmed.push(id.to_string());
+        }
+        whole
+    })
+    .unwrap_or(rect);
+    if off {
+        wash(ui, whole);
+    }
+}
+
+/// Washes out a label drawn beside a control (`rect`), as the control is.
+pub fn wash_label(ui: &Ui, rect: Rect, off: bool) {
+    if off {
+        wash(ui, rect);
+    }
+}
+
+/// Every control of the ribbon drawn this frame: where, and whether it was washed out.
+pub type RibbonControls = Vec<(Rect, bool)>;
+
+/// Washes out the clickable widgets of the ribbon no command vouched for. Returns what ended up dimmed
+/// (command ids, and tooltips or positions of the unnamed controls) and every control with its state.
+pub fn finish_dimming(ui: &Ui) -> (Vec<String>, RibbonControls) {
+    let Some(state) = ui.ctx().data(|d| d.get_temp::<Dimming>(dimming_id())).filter(|s| s.layer == Some(ui.layer_id())) else {
+        return Default::default();
+    };
+    let clip = ui.clip_rect().intersect(state.area.unwrap_or(Rect::NOTHING));
+    // Buttons, checkboxes and combos only: the scroll area and other panels have far bigger rects, and
+    // a label (also clickable, to select its text) is under 18 high.
+    let drawn: Vec<Rect> = ui.ctx().viewport(|v| {
+        v.this_pass
+            .widgets
+            .get_layer(ui.layer_id())
+            .filter(|w| w.sense.senses_click() && w.rect.intersects(clip) && w.rect.width() < 260.0 && (18.0..=80.0).contains(&w.rect.height()))
+            .map(|w| w.rect)
+            .collect()
+    });
+    let mut dimmed = state.dimmed.clone();
+    let mut controls = RibbonControls::new();
+    for rect in drawn {
+        if let Some((_, off)) = state.handled.iter().find(|(h, _)| h.contains(rect.center())) {
+            controls.push((rect, *off));
+            continue;
+        }
+        wash(ui, rect);
+        controls.push((rect, true));
+        let name = state.named.iter().find(|(r, _)| r.contains(rect.center())).map(|(_, tip)| tip.clone());
+        dimmed.push(name.unwrap_or_else(|| format!("widget@{:.0},{:.0} {:.0}x{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height())));
+    }
+    // Stop recording: nothing else drawn in this layer (formula bar, tabs, panes) belongs to the ribbon,
+    // and a frame without a ribbon must not keep growing the lists.
+    ui.ctx().data_mut(|d| d.insert_temp(dimming_id(), Dimming::default()));
+    (dimmed, controls)
+}
+
 /// A flat square icon button with hover highlight and tooltip.
 pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egui::Vec2) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -24,6 +134,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, color: Color32, tip: &str, size: egu
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, color);
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -38,6 +149,7 @@ pub fn toggle_button(ui: &mut Ui, icon: Icon, on: bool, tip: &str) -> Response {
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, t.text);
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -73,6 +185,7 @@ pub fn big_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: boo
             );
         }
     }
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -101,6 +214,7 @@ pub fn small_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: b
             t.text_dim,
         );
     }
+    track(ui, &resp, tip);
     resp.on_hover_text(tr(ui, tip))
 }
 
@@ -122,6 +236,8 @@ pub fn split_button(ui: &mut Ui, icon: Icon, accent: Option<Color32>, tip: &str)
         ui.painter().rect_filled(Rect::from_min_size(pos2(main.left() + 4.0, main.bottom() - 5.0), vec2(17.0, 3.0)), 0.0, c);
     }
     icons::paint(ui.painter(), Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)), Icon::Chevron, t.text_dim);
+    track(ui, &m.union(a.clone()), tip);
+    with_dimming(ui, |s| s.wholes.push((a.rect, rect)));
     (m.on_hover_text(tr(ui, tip)).clicked(), a)
 }
 
@@ -272,6 +388,11 @@ pub fn color_palette(ui: &mut Ui, theme_colors: &[u32; 12], none_label: &str) ->
 
 pub fn message_box(app: &mut SheetApp, ctx: &egui::Context) {
     let Some((title, msg)) = app.message.clone() else { return };
+    // A read-only document refuses quietly: the refusal never shows, not even for a frame.
+    if msg.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT) {
+        app.message = None;
+        return;
+    }
     let lang = app.ui.language;
     let mut close = false;
     egui::Modal::new(egui::Id::new("message_box")).show(ctx, |ui| {

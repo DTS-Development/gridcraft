@@ -1,9 +1,17 @@
 //! The `postMessage` bridge to a same-origin parent page (`?host=parent`), for pages that embed
 //! GridCraft in an `<iframe>` (such as a Nextcloud app). Messages are plain objects with a `type`:
 //!
-//! - `gridcraft:ready` (to the parent): `{ version }`, the app is listening; send a file now.
-//! - `gridcraft:open` (from the parent): `{ name, bytes, policy }`, bytes an `ArrayBuffer`
-//!   or `Uint8Array`. It opens like a workbook picked with File › Open or dropped on the window.
+//! - `gridcraft:ready` (to the parent): `{ version, openOptions }`, the app is listening; send a file now.
+//!   `openOptions` lists the open options this build understands (`readOnly`, `chrome`, `zoomControls`);
+//!   an older build has none and would open a workbook editable whatever it was asked for.
+//! - `gridcraft:open` (from the parent): `{ name, bytes, policy, readOnly, chrome, zoomControls }`, bytes an
+//!   `ArrayBuffer` or `Uint8Array`. It opens like a workbook picked with File › Open or dropped on the window.
+//!   The three options belong to that workbook and are booleans (anything else counts as left out; an open
+//!   without them is the plain editor): `readOnly` lets nothing edit it and nothing save it (the parent hears
+//!   no `dirty`, and `request-bytes` with purpose `save` is answered `bytes-failed` with `read-only`);
+//!   `chrome: false` hides the title bar, ribbon, formula bar, status bar and task panes and the ways to
+//!   write comments and notes (the sheet tabs stay); `zoomControls` (default false) keeps the zoom buttons
+//!   when the chrome is hidden. Each option takes effect with the file it came with, never on another.
 //!   `policy` is `{ overrides: { "<command id>": true | false } }` with the commands that differ
 //!   from their grade (see `commands.json`); in the PPM build `true` turns an off command on and
 //!   `false` an on command off. A missing or malformed policy changes nothing; ids that are no
@@ -68,8 +76,8 @@ pub struct Bridge {
     saved: Rc<RefCell<Vec<String>>>,
     /// The unsaved-changes state last reported to the parent.
     reported: Rc<Cell<Option<bool>>>,
-    /// The overrides of the latest `gridcraft:open`, until the next frame applies them.
-    policy: Rc<RefCell<Option<Vec<(String, bool)>>>>,
+    /// The options of each `gridcraft:open` (one per file, in order), until the next frame hands them to the app.
+    opens: Rc<RefCell<Vec<gridcraft_ui_egui::HostOpen>>>,
     /// A `gridcraft:open` has arrived, so there is a workbook to answer `gridcraft:request-bytes` with.
     opened: Rc<Cell<bool>>,
     /// `gridcraft:request-bytes` requests (id, purpose) the next frame answers.
@@ -106,7 +114,7 @@ impl Bridge {
             origin,
             saved: Rc::default(),
             reported: Rc::default(),
-            policy: Rc::default(),
+            opens: Rc::default(),
             opened: Rc::default(),
             byte_requests: Rc::default(),
             gotos: Rc::default(),
@@ -157,7 +165,10 @@ impl Bridge {
     }
 
     pub fn post_ready(&self) {
-        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into())]);
+        // The open options this build understands: a host that asks for one that is missing here (an
+        // older build) is turned away instead of getting a workbook it can still edit.
+        let options: js_sys::Array = crate::gate::OPEN_OPTIONS.iter().map(|f| JsValue::from_str(f)).collect();
+        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("openOptions", options.into())]);
     }
 
     pub fn post_failed(&self, error: &str) {
@@ -243,6 +254,10 @@ impl Bridge {
             return Err("not-ready".into());
         }
         if purpose == "save" {
+            // A read-only document is never stored: no save, and nothing counts as saved.
+            if app.session.read_only() {
+                return Err("read-only".into());
+            }
             if !app.commit_edit(0, 0, false, false) {
                 return Err("edit-pending".into());
             }
@@ -290,16 +305,15 @@ impl Bridge {
         Ok(())
     }
 
-    /// Before each pass: the policy that came with a workbook is set before the workbook opens.
-    pub fn apply_policy(&self, app: &SheetApp) {
-        if let Some(overrides) = self.policy.borrow_mut().take() {
-            app.session.set_policy(&overrides);
-        }
+    /// Before each pass: the options that came with the files are queued in the app, which sets each
+    /// file's options just before it opens that file (so a later open cannot change an earlier one's).
+    pub fn apply_opens(&self, app: &mut SheetApp) {
+        app.open_queue.extend(std::mem::take(&mut *self.opens.borrow_mut()));
     }
 
     fn listen(&self, inbox: Inbox, ctx: egui::Context) {
         let parent = self.parent.clone();
-        let policy = self.policy.clone();
+        let opens = self.opens.clone();
         let opened = self.opened.clone();
         let byte_requests = self.byte_requests.clone();
         let gotos = self.gotos.clone();
@@ -392,7 +406,10 @@ impl Bridge {
             }
             let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
             let Some(bytes) = bytes(&data) else { return };
-            *policy.borrow_mut() = Some(policy_overrides(&data));
+            opens.borrow_mut().push(gridcraft_ui_egui::HostOpen {
+                overrides: policy_overrides(&data),
+                view: crate::gate::view_options(boolean(&data, "readOnly"), boolean(&data, "chrome"), boolean(&data, "zoomControls")),
+            });
             #[cfg(feature = "ppm-host")]
             if json_tools {
                 replace.set(true);
@@ -529,6 +546,11 @@ fn policy_overrides(data: &JsValue) -> Vec<(String, bool)> {
         .and_then(|policy| js_sys::JSON::stringify(&policy).ok())
         .and_then(|text| text.as_string());
     text.map(|text| crate::gate::policy_overrides(&text)).unwrap_or_default()
+}
+
+/// A field that is a boolean; anything else counts as not given.
+fn boolean(data: &JsValue, key: &str) -> Option<bool> {
+    js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_bool()
 }
 
 fn string(data: &JsValue, key: &str) -> Option<String> {

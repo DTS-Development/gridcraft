@@ -48,6 +48,9 @@ pub enum EngineError {
     // The text must contain `hostlock::BLOCKED_TEXT` (the hostlock tests check it).
     #[error("command `{0}` is blocked by the PPM host lock")]
     HostLocked(String),
+    /// A read-only document (see [`ViewOptions`]) refuses the command.
+    #[error("command `{0}` is not available in a read-only document")]
+    ReadOnly(String),
     #[error("invalid parameters for `{cmd}`: {msg}")]
     BadParams { cmd: String, msg: String },
     #[error("no workbook open")]
@@ -99,6 +102,8 @@ pub enum Mode {
 
 #[derive(Clone, Debug)]
 pub struct DocState {
+    /// How the host asked this document to be shown; the default for everything but a host's open.
+    pub view: ViewOptions,
     pub wb: Arc<Workbook>,
     pub calc: Calc,
     pub selection: Selection,
@@ -118,6 +123,23 @@ pub struct DocState {
     pub content_kind: Option<io::FileKind>,
 }
 
+/// What the host's `open` asked for one document. The default is the plain editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// Viewing only: [`hostlock::READ_ONLY_ALLOWED`] commands run, nothing else.
+    pub read_only: bool,
+    /// The editing chrome (ribbon, formula bar, status bar, title bar) is shown.
+    pub chrome: bool,
+    /// With the chrome hidden, a small zoom control stays.
+    pub zoom_controls: bool,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        ViewOptions { read_only: false, chrome: true, zoom_controls: false }
+    }
+}
+
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const UNDO_LIMIT: usize = 100;
 
@@ -128,6 +150,7 @@ impl DocState {
         let wb = Arc::new(wb);
         let sel = Selection::at(wb.active().map(|s| s.view_active).unwrap_or_default());
         DocState {
+            view: ViewOptions::default(),
             saved: wb.clone(),
             wb,
             calc,
@@ -143,8 +166,10 @@ impl DocState {
             content_kind: None,
         }
     }
+    /// A read-only document is never dirty: viewing it (zoom, sheet switch) swaps the workbook
+    /// pointer, which is no change worth saving.
     pub fn is_dirty(&self) -> bool {
-        !Arc::ptr_eq(&self.wb, &self.saved)
+        !self.view.read_only && !Arc::ptr_eq(&self.wb, &self.saved)
     }
     pub fn sheet_index(&self) -> usize {
         self.wb.active_sheet
@@ -264,6 +289,8 @@ pub struct Session {
     host_locked: bool,
     /// The parent's overrides for the locked session; clones share their state.
     host_policy: hostlock::Policy,
+    /// The view options the next `file.open` gives its document (taken by it).
+    next_view: Option<ViewOptions>,
 }
 
 impl Session {
@@ -344,12 +371,30 @@ impl Session {
         }
     }
 
+    /// The view options the next `file.open` gives its document; kept until an open takes them
+    /// (a password prompt in between keeps them).
+    pub fn set_next_view(&mut self, view: Option<ViewOptions>) {
+        self.next_view = view;
+    }
+
+    pub(crate) fn take_next_view(&mut self) -> ViewOptions {
+        self.next_view.take().unwrap_or_default()
+    }
+
+    /// Whether the active document is read-only.
+    pub fn read_only(&self) -> bool {
+        self.active().is_some_and(|d| d.view.read_only)
+    }
+
     /// Runs a command by id. Undoable commands record a history step when the workbook changed.
     /// Panics inside commands are caught and reported; the workbook is restored.
     pub fn execute(&mut self, id: &str, params: Json) -> Result<Json> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if !hostlock::permits(self.host_policy().as_ref(), id, &params) {
             return Err(EngineError::HostLocked(id.to_string()));
+        }
+        if self.read_only() && !hostlock::read_only_permits(id) {
+            return Err(EngineError::ReadOnly(id.to_string()));
         }
         if let Err(why) = (spec.enabled)(self) {
             return Err(EngineError::Disabled(id.to_string(), why));
@@ -384,11 +429,15 @@ impl Session {
             && let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid)
             && !Arc::ptr_eq(&d.wb, &wb)
         {
-            d.undo.push(HistoryEntry { label: spec.label.trim_end_matches('…').to_string(), wb, selection: sel });
-            if d.undo.len() > UNDO_LIMIT {
-                d.undo.remove(0);
+            // A read-only document keeps no history: what it still changes is how it is shown.
+            if !d.view.read_only {
+                d.undo.push(HistoryEntry { label: spec.label.trim_end_matches('…').to_string(), wb, selection: sel });
+                if d.undo.len() > UNDO_LIMIT {
+                    d.undo.remove(0);
+                }
+                d.redo.clear();
             }
-            d.redo.clear();
+            // The workbook changed either way: caches keyed by the revision must see it.
             d.revision += 1;
         }
         result

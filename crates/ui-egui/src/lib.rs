@@ -44,6 +44,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 pub use control::{ControlRequest, ControlResponse};
+
+/// The options of one host `open`: the command overrides of its policy and how the document is shown.
+/// They belong to that file alone; a file that comes without them gets the defaults.
+#[derive(Clone, Debug, Default)]
+pub struct HostOpen {
+    pub overrides: Vec<(String, bool)>,
+    pub view: gridcraft_engine::ViewOptions,
+}
 pub mod desktop_theme;
 
 /// Persisted UI preferences.
@@ -286,6 +294,15 @@ pub const UI_COMMANDS_ALLOWED: &[&str] = &[
 pub(crate) const DIALOGS_LOCKED: &[&str] =
     &["agents", "allowEditRanges", "macros", "open", "protectSheet", "protectWorkbook", "start", "unprotectSheet", "unprotectWorkbook"];
 
+/// Dialogs whose confirmation is a command a read-only document refuses (they only edit the workbook).
+const READ_ONLY_NO_DIALOGS: &[&str] = &[
+    "allowEditRanges", "analysisToolPak", "cfQuick", "chartTitle", "columnWidth", "comment", "defineName", "deleteCells", "forecastSheet",
+    "formatCells", "importData", "insertCells", "insertFunction", "insertLink", "insertPaste", "insertPicture", "manageRules", "moveSheet",
+    "nameManager", "pageSetup", "pasteSpecial", "pickList", "protectSheet", "protectWorkbook", "recommendedCharts", "removeDuplicates",
+    "rowHeight", "selectData", "solver", "solverResults", "sort", "sparkline", "subtotal", "textToColumns", "unprotectSheet",
+    "unprotectWorkbook",
+];
+
 /// The command whose switch decides whether the host-locked app opens the dialog `name` (`None`:
 /// always). `saveCopy` is every export and Save As in one dialog: its format picks the switch.
 fn dialog_switch(name: &str, params: &Json) -> Option<&'static str> {
@@ -337,6 +354,18 @@ pub struct SheetApp {
     print_feedback_seen: Option<printing::Feedback>,
     /// Synthetic input from agents, one batch per frame (drags need several frames).
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
+    /// What the host's `open` messages asked for, one per file still to come through the inbox, in order.
+    pub open_queue: std::collections::VecDeque<HostOpen>,
+    /// The ribbon controls washed out in the last frame (command ids, or tooltips of unnamed controls): a
+    /// read-only document's edit buttons. Empty for an editable document.
+    pub ribbon_dimmed: Vec<String>,
+    /// Every control of the ribbon drawn in the last frame of a read-only document, and whether it is washed out.
+    pub ribbon_controls: Vec<(egui::Rect, bool)>,
+    /// The last ribbon drawn was wider than its card (some controls are scrolled out of sight).
+    pub ribbon_overflow: bool,
+    /// A host open waiting behind a password prompt: the policy to put back if the prompt is cancelled
+    /// (`Some(None)`: the open had options but the app had no policy before).
+    pub password_restore: Option<Option<Vec<(String, bool)>>>,
     pub control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
     pub grid: grid::GridState,
     pub perf: Perf,
@@ -397,6 +426,11 @@ impl SheetApp {
             printing: Default::default(),
             print_feedback_seen: None,
             synthetic: Default::default(),
+            open_queue: Default::default(),
+            ribbon_dimmed: Vec::new(),
+            ribbon_controls: Vec::new(),
+            ribbon_overflow: false,
+            password_restore: None,
             control_rx: None,
             grid: grid::GridState {
                 autosave: false,
@@ -449,7 +483,15 @@ impl SheetApp {
 
     /// Is `id` a command of the host-locked app that is off now (so its control is shown dimmed)?
     pub fn switched_off(&self, id: &str) -> bool {
-        self.host_locked() && host_lock::grade(id).is_some() && !self.allowed(id)
+        // A read-only document refuses its edit commands (silently), so their buttons are washed out too.
+        let read_only_off = self.session.read_only() && read_only_dims(id);
+        self.host_locked() && ((host_lock::grade(id).is_some() && !self.allowed(id)) || read_only_off)
+    }
+
+    /// Is the text label beside a control washed out too? Only in a read-only document: an editable one
+    /// keeps its labels as they were (the host-lock switch dims the icon alone).
+    pub fn label_washed(&self, id: &str) -> bool {
+        self.session.read_only() && self.switched_off(id)
     }
 
     /// May the File tab show `page`? Options stays; Info (properties and Protect Workbook) and
@@ -699,7 +741,7 @@ impl SheetApp {
     /// Shows a command error: a toast for an unavailable command, else a message box.
     fn alert(&mut self, e: String) {
         // The host lock refuses quietly: the item is not in the menus either.
-        if e.contains(gridcraft_engine::hostlock::BLOCKED_TEXT) {
+        if e.contains(gridcraft_engine::hostlock::BLOCKED_TEXT) || e.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT) {
             return;
         }
         if e.contains("is not available right now") {
@@ -884,6 +926,14 @@ impl SheetApp {
             self.message = Some(("Text Box".into(), clean_error(&e)));
             return;
         }
+        // A read-only document has nothing to confirm in these: the washed-out buttons open nothing.
+        if self.session.read_only() && READ_ONLY_NO_DIALOGS.contains(&name) {
+            return;
+        }
+        // Comments and notes are written in the chrome the host hid.
+        if name == "comment" && self.session.active().is_some_and(|d| !d.view.chrome) {
+            return;
+        }
         if self.host_locked() && (DIALOGS_LOCKED.contains(&name) || dialog_switch(name, &params).is_some_and(|c| !self.allowed(c))) {
             return;
         }
@@ -957,6 +1007,8 @@ impl SheetApp {
     /// password dialog and the control channel.
     pub fn after_open(&mut self, path: Option<&str>, r: &Json) {
         self.backstage = None;
+        // A header being edited in the earlier document must not be written into this one.
+        paper_view::cancel(self);
         if let Some(path) = path {
             self.ui.recent.retain(|p| p != path);
             self.ui.recent.insert(0, path.to_string());
@@ -1032,6 +1084,10 @@ impl SheetApp {
     /// cell to the engine so a save writes them (`sheetView topLeftCell`). Normal view only:
     /// Page Layout view scrolls over pages, not cells.
     pub fn store_view_state(&mut self) {
+        // A read-only document is never saved, so its view needs no recording.
+        if self.session.read_only() {
+            return;
+        }
         let Some(d) = self.session.active_mut() else { return };
         let mut tops = Vec::new();
         for (&(uid, si), v) in &self.views {
@@ -1049,6 +1105,10 @@ impl SheetApp {
 
     /// Starts editing the active cell. `text` replaces the content (typing) or pre-fills it.
     pub fn begin_edit(&mut self, text: Option<String>, from_formula_bar: bool) {
+        // A read-only document opens no editor (typing, F2, double click, formula bar).
+        if self.session.read_only() {
+            return;
+        }
         if let Err(e) = self.commit_text_box_edit() {
             self.message = Some(("Text Box".into(), clean_error(&e)));
             return;
@@ -1214,6 +1274,10 @@ impl SheetApp {
         // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
         // anything that never reached a control (collapsed ribbon, tab switch) is dropped.
         self.ui.keytip_invoke = None;
+        // A read-only document refuses quietly, in every path (a dialog's own message box included).
+        if self.message.as_ref().is_some_and(|(_, m)| m.contains(gridcraft_engine::hostlock::READ_ONLY_TEXT)) {
+            self.message = None;
+        }
         if self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
             self.fonts_ready = false;
             self.fonts_set = false;
@@ -1293,17 +1357,38 @@ impl SheetApp {
             .unwrap_or_default();
         for (name, bytes) in arrived {
             let b64 = gridcraft_engine::io::base64_encode(&bytes);
+            // A host's open brings its own policy and view options, set just before this file opens
+            // (it may sit behind a password prompt: the options wait for the open that succeeds).
+            let policy_before = self.open_queue.pop_front().map(|o| {
+                let before = self.session.host_policy().map(|p| p.overrides());
+                self.session.set_policy(&o.overrides);
+                self.session.set_next_view(Some(o.view));
+                before
+            });
             match self.run("file.open", json!({"name": &name, "base64": &b64})) {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
                     self.backstage = None;
+                    // A header being edited in the earlier document must not be written into this one.
+                    paper_view::cancel(self);
                     self.show_open_warnings(&r);
                 }
                 Err(e) if e.contains(gridcraft_engine::io::PASSWORD_REQUIRED) => {
                     self.backstage = None;
+                    // Cancelling the prompt abandons this open: its options go back (see `dialogs`).
+                    self.password_restore = policy_before;
                     self.open_dialog("openPassword", json!({"name": name, "base64": b64}));
                 }
-                Err(e) => self.message = Some(("GridCraft".into(), clean_error(&e))),
+                Err(e) => {
+                    // A failed open leaves the earlier documents as they were, options included.
+                    if let Some(before) = policy_before {
+                        self.session.set_next_view(None);
+                        if let Some(before) = before {
+                            self.session.set_policy(&before);
+                        }
+                    }
+                    self.message = Some(("GridCraft".into(), clean_error(&e)));
+                }
             }
             self.after_engine();
         }
@@ -1352,30 +1437,46 @@ impl SheetApp {
         // The language the widgets translate with this frame (see `i18n::current`).
         i18n::set_current(&ctx, self.ui.language);
         let t = theme::Tokens::get(&ctx);
-        if self.backstage.is_none() {
+        // The host may hide the editing chrome for this document (`chrome: false`): no title bar,
+        // ribbon, formula bar, status bar or File menu; the sheet tabs and the grid stay.
+        let chrome = self.session.active().is_none_or(|d| d.view.chrome);
+        if !chrome {
+            self.backstage = None;
+        }
+        if self.backstage.is_none() && chrome {
             self.ribbon_keys(&ctx);
         }
-        ribbon::title_bar(self, ui);
+        if chrome {
+            ribbon::title_bar(self, ui);
+        }
         if self.backstage.is_some() {
             // File tab: the Backstage view replaces everything below the title bar.
             backstage::show(self, ui);
         } else {
-            ribbon::show(self, ui);
-            widgets::notice_bar(self, ui);
-            if self.session.prefs.formula_bar {
-                formula_bar::show(self, ui);
-            }
-            if self.ui.status_bar {
-                tabs::status_bar(self, ui);
+            if chrome {
+                ribbon::show(self, ui);
+                widgets::notice_bar(self, ui);
+                if self.session.prefs.formula_bar {
+                    formula_bar::show(self, ui);
+                }
+                if self.ui.status_bar {
+                    tabs::status_bar(self, ui);
+                }
             }
             tabs::sheet_tabs(self, ui);
-            pivot_pane::show(self, ui);
-            panes::show(self, ui);
+            // The task panes (comments, pivot fields, watch, selection) edit the workbook: part of the chrome.
+            if chrome {
+                pivot_pane::show(self, ui);
+                panes::show(self, ui);
+            }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.grid_bg)).show(ui, |ui| {
                 let g0 = now_ms();
                 grid::show(self, ui);
                 self.perf.grid_ms = now_ms() - g0;
             });
+        }
+        if !chrome && self.session.active().is_some_and(|d| d.view.zoom_controls) {
+            tabs::zoom_overlay(self, &ctx);
         }
         dialogs::show(self, &ctx);
         widgets::message_box(self, &ctx);
@@ -1552,4 +1653,35 @@ mod pending_edit_tests {
         app.begin_edit(Some("6".into()), false);
         assert_eq!(cell_text(&app).as_deref(), Some("6"), "an allowed input counts");
     }
+}
+
+/// Whether the ribbon control named `id` is washed out in a read-only document: anything that is not a
+/// command a read-only document runs, and the buttons that only open a menu or dialog to edit with
+/// (function libraries, names, sort, comments, charts...). The title bar's own controls stay.
+fn read_only_dims(id: &str) -> bool {
+    /// Title-bar controls that are not commands.
+    const KEEP: &[&str] = &["about", "agents", "commandSearch", "comments", "journal", "start", "statistics"];
+    /// Dialogs that only look or move: nothing in them edits the workbook.
+    const KEEP_DIALOGS: &[&str] = &["accessibility", "errorChecking", "evaluateFormula", "find", "goTo", "goToSpecial", "spelling", "zoom"];
+    /// Allowed commands whose ribbon button opens a menu that inserts.
+    const INSERTERS: &[&str] = &[
+        "formulas.dateTime",
+        "formulas.financial",
+        "formulas.logical",
+        "formulas.lookup",
+        "formulas.lookupReference",
+        "formulas.mathTrig",
+        "formulas.moreFunctions",
+        "formulas.recentlyUsed",
+        "formulas.text",
+        "insert.chartRecommendations",
+        "insert.recommendedCharts",
+    ];
+    if KEEP.contains(&id) {
+        return false;
+    }
+    if let Some(dialog) = id.strip_prefix("dialog:") {
+        return !KEEP_DIALOGS.contains(&dialog);
+    }
+    INSERTERS.contains(&id) || !gridcraft_engine::hostlock::read_only_permits(id)
 }

@@ -331,6 +331,10 @@ fn hf_key(kind: HfPage, footer: bool) -> &'static str {
 
 /// Insert › Header & Footer: switches to Page Layout view and edits the first page's centre header.
 pub fn start_editing(app: &mut SheetApp) {
+    // A read-only document has no header to edit (and the button is washed out).
+    if app.session.read_only() {
+        return;
+    }
     if app.session.active().and_then(|d| d.wb.active()).is_some_and(|sh| sh.view != SheetViewMode::PageLayout) {
         app.run_or_alert("view.pageLayout", json!({}));
     }
@@ -356,6 +360,9 @@ fn page_kind(sh: &Sheet, pg: &PageGrid, page: (usize, usize)) -> HfPage {
 
 /// Starts (or moves) editing a header or footer section.
 pub fn begin(app: &mut SheetApp, sheet: usize, sh: &Sheet, page: (usize, usize), zone: HfZone) {
+    if app.session.read_only() {
+        return;
+    }
     if let Some(e) = app.grid.hf_edit.as_mut()
         && e.sheet == sheet
         && e.page == page
@@ -834,6 +841,10 @@ fn ruler_margins(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, pg: &PageGrid
                 app.run_or_alert("pageLayout.pageSetup", json!({"sheet": si, "margins": {cur.edge.key(): cur.inches}}));
             }
         }
+        return;
+    }
+    // Margins are part of the workbook: a read-only document has no handles to drag.
+    if app.session.read_only() {
         return;
     }
     for (resp, h) in [(&hresp, true), (&vresp, false)] {

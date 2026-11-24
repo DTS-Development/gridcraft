@@ -248,9 +248,12 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             ui.painter().rect_stroke(card, 10.0, Stroke::new(1.0, t.ribbon_border), StrokeKind::Inside);
             let inner = card.shrink2(vec2(10.0, 6.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                let scroll = egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                        // A read-only document of a host-locked app (the only place `switched_off` washes
+                        // controls): record the controls so the ones that edit are washed out.
+                        crate::widgets::begin_dimming(ui, app.session.read_only() && app.host_locked(), card);
                         match app.ui.ribbon_tab.as_str() {
                             "Home" => home(app, ui),
                             "Insert" => insert(app, ui),
@@ -266,8 +269,11 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                             crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
                             _ => home(app, ui),
                         }
+                        (app.ribbon_dimmed, app.ribbon_controls) = crate::widgets::finish_dimming(ui);
                     });
                 });
+                // Controls scrolled out of the card are out of sight (and of the washing): tests watch for it.
+                app.ribbon_overflow = scroll.content_size.x > scroll.inner_rect.width() + 0.5;
             });
         });
 }
@@ -354,10 +360,7 @@ fn keytip(app: &SheetApp, ui: &Ui, sequence: &str, at: egui::Pos2) {
 fn control_keytip(app: &SheetApp, ui: &Ui, response: &egui::Response, id: &str) {
     // Host lock: a control the administrator switched off stays drawn, washed out; a click on it
     // is refused without a word by the engine.
-    if app.switched_off(id) {
-        let t = Tokens::get(ui.ctx());
-        ui.painter().rect_filled(response.rect, 3.0, t.ribbon.gamma_multiply(0.7));
-    }
+    crate::widgets::note_command(ui, response.rect, id, app.switched_off(id));
     if let Some(sequence) = keytip_table::control_badge(app.keytips.prefix().unwrap_or_default(), id) {
         keytip(app, ui, sequence, response.rect.center_bottom());
     }
@@ -769,7 +772,8 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             if wrap.clicked() {
                 act(app, "home.wrapText", json!({}));
             }
-            ui.label(egui::RichText::new(app.ui.language.tr("Wrap Text")).font(theme::ui_font(12.5)));
+            let label = ui.label(egui::RichText::new(app.ui.language.tr("Wrap Text")).font(theme::ui_font(12.5)));
+            crate::widgets::wash_label(ui, label.rect, app.label_washed("home.wrapText"));
         });
         ui.horizontal(|ui| {
             for (icon, h, id, tip) in [
@@ -800,7 +804,8 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             if m {
                 act(app, "home.mergeCenter", json!({}));
             }
-            ui.label(egui::RichText::new(app.ui.language.tr("Merge & Center")).font(theme::ui_font(12.5)));
+            let label = ui.label(egui::RichText::new(app.ui.language.tr("Merge & Center")).font(theme::ui_font(12.5)));
+            crate::widgets::wash_label(ui, label.rect, app.label_washed("home.mergeCenter"));
             egui::Popup::menu(&ma).show(|ui| {
                 menu_items(
                     app,
@@ -1068,6 +1073,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
         );
     });
     let fs = big_button(ui, Icon::Find, "Find &\nSelect", "Find & Select", true);
+    crate::widgets::note_command(ui, fs.rect, "edit.find", false);
     for sequence in keytip_table::group_extension(
         app.keytips.prefix().unwrap_or_default(),
         &["dialog:find", "dialog:goTo", "dialog:goToSpecial", "edit.goToSpecial"],
@@ -1881,17 +1887,23 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
     });
     sep(ui);
     ui.vertical(|ui| {
-        if small_button(ui, Icon::Trace, "Trace Precedents", "Trace Precedents", false).clicked()
+        let b = small_button(ui, Icon::Trace, "Trace Precedents", "Trace Precedents", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.tracePrecedents", false);
+        if b.clicked()
             && let Ok(r) = app.run("formulas.tracePrecedents", json!({}))
         {
             app.grid.trace = Some(r);
         }
-        if small_button(ui, Icon::Trace, "Trace Dependents", "Trace Dependents", false).clicked()
+        let b = small_button(ui, Icon::Trace, "Trace Dependents", "Trace Dependents", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.traceDependents", false);
+        if b.clicked()
             && let Ok(r) = app.run("formulas.traceDependents", json!({}))
         {
             app.grid.trace = Some(r);
         }
-        if small_button(ui, Icon::Close, "Remove Arrows", "Remove Arrows", false).clicked() {
+        let b = small_button(ui, Icon::Close, "Remove Arrows", "Remove Arrows", false);
+        crate::widgets::note_command(ui, b.rect, "formulas.removeArrows", false);
+        if b.clicked() {
             app.grid.trace = None;
         }
     });
@@ -1912,7 +1924,9 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
             app.open_dialog("evaluateFormula", json!({}));
         }
     });
-    if big_button(ui, Icon::Search, "Watch\nWindow", "Watch Window", false).clicked() {
+    let b = big_button(ui, Icon::Search, "Watch\nWindow", "Watch Window", false);
+    crate::widgets::note_command(ui, b.rect, "formulas.watchWindow", false);
+    if b.clicked() {
         app.grid.pane = Some("watch".into());
     }
     sep(ui);
@@ -2108,7 +2122,9 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
         for (icon, label, tip, id) in
             [(Icon::Left, "Previous", "Previous Comment", "review.previousComment"), (Icon::Right, "Next", "Next Comment", "review.nextComment")]
         {
-            if small_button(ui, icon, label, tip, false).clicked() {
+            let b = small_button(ui, icon, label, tip, false);
+            crate::widgets::note_command(ui, b.rect, id, false);
+            if b.clicked() {
                 act(app, id, json!({}));
                 app.grid.ensure_visible = true;
             }
@@ -2116,6 +2132,7 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
     });
     let shown = app.session.comments_pane;
     let r = big_button(ui, Icon::Comment, "Show\nComments", "Comments pane", false);
+    crate::widgets::note_command(ui, r.rect, "review.showComments", false);
     if shown {
         ui.painter().rect_stroke(r.rect, 5.0, Stroke::new(2.0, Tokens::get(ui.ctx()).accent), StrokeKind::Inside);
     }
@@ -2270,16 +2287,20 @@ fn view(app: &mut SheetApp, ui: &mut Ui) {
             "dark" => "Dark",
             _ => "Light",
         };
-        egui::ComboBox::from_id_salt("display_theme").selected_text(lang.tr(label)).width(88.0).show_ui(ui, |ui| {
+        let theme_box = egui::ComboBox::from_id_salt("display_theme").selected_text(lang.tr(label)).width(88.0).show_ui(ui, |ui| {
             for (value, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
                 if ui.selectable_label(mode == value, lang.tr(label)).clicked() {
                     act(app, "view.theme", json!({"mode": value}));
                 }
             }
         });
+        // Display preferences are not the document: they stay usable in a read-only one.
+        crate::widgets::note_command(ui, theme_box.response.rect, "view.theme", false);
         let mut animations = app.ui.animations;
         let hint = lang.tr("Glide the selection outline to the cell you move to instead of jumping there");
-        if ui.checkbox(&mut animations, lang.tr("Animations")).on_hover_text(hint).changed() {
+        let animations_box = ui.checkbox(&mut animations, lang.tr("Animations")).on_hover_text(hint);
+        crate::widgets::note_command(ui, animations_box.rect, "view.animations", false);
+        if animations_box.changed() {
             act(app, "view.animations", json!({"on": animations}));
         }
     });
@@ -2289,7 +2310,7 @@ fn view(app: &mut SheetApp, ui: &mut Ui) {
         ui.label(egui::RichText::new(lang.tr("Interface size")).font(theme::ui_font(11.5)).color(t.text_dim));
         let current = app.ui.interface_scale;
         let text = |v: u16| if v == 100 { lang.tr("Auto").to_string() } else { format!("{v}%") };
-        egui::ComboBox::from_id_salt("ui_interface_size")
+        let size_box = egui::ComboBox::from_id_salt("ui_interface_size")
             .width(120.0)
             .selected_text(egui::RichText::new(text(current)).font(theme::ui_font(12.5)))
             .show_ui(ui, |ui| {
@@ -2299,6 +2320,7 @@ fn view(app: &mut SheetApp, ui: &mut Ui) {
                     }
                 }
             });
+        crate::widgets::note_command(ui, size_box.response.rect, "view.interfaceScale", false);
     });
     // Interface language: settings live in the View tab, like Excel's Options. The label follows
     // the current language so it stays readable; the choices are always shown in their own script.
