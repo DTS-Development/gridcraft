@@ -120,3 +120,30 @@ fn a_host_policy_cannot_turn_an_edit_back_on() {
     }
     assert!(s.active().unwrap().undo.is_empty());
 }
+
+/// `is_dirty` is always false for a read-only document, so a command it still allows that changed the
+/// workbook would go unnoticed: run every allowed command and make sure the workbook is the same one.
+#[test]
+fn every_allowed_command_leaves_the_workbook_alone() {
+    use gridcraft_engine::hostlock::READ_ONLY_ALLOWED;
+    let mut s = Session::new();
+    open(&mut s, Some(read_only()));
+    let mut wb = s.active().unwrap().wb.clone();
+    // Closing the document or opening another one is not an edit of it (the active document changes).
+    let leaves = ["file.close", "file.new", "file.open", "file.openBytes", "view.newWindow"];
+    let mut changed = vec![];
+    for id in READ_ONLY_ALLOWED.iter().filter(|id| !leaves.contains(id)) {
+        // Commands that need parameters or a dialog fail on `{}`: that is fine, a failure edits nothing.
+        let _ = s.execute(id, json!({}));
+        let now = s.active().unwrap_or_else(|| panic!("`{id}` closed the document")).wb.clone();
+        if !std::sync::Arc::ptr_eq(&wb, &now) {
+            changed.push(*id);
+            wb = now;
+        }
+    }
+    // These only change how the workbook is shown (view mode, zoom), which the workbook stores; a dirty
+    // flag is never raised for a read-only document, and nothing is saved.
+    let view_state = ["view.normal", "view.pageBreakPreview", "view.pageLayout", "view.zoom100", "view.zoomToSelection"];
+    changed.retain(|id| !view_state.contains(id));
+    assert!(changed.is_empty(), "allowed commands that edit the workbook: {changed:?}");
+}

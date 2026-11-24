@@ -287,8 +287,8 @@ mod tests {
         use gridcraft_engine::ViewOptions;
         assert_eq!(view_options(None, None, None), ViewOptions::default());
         assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls"], "the names the host's open message uses");
-        assert_eq!(view_options(None, None, None), ViewOptions { read_only: false, chrome: true, zoom_controls: true });
-        assert_eq!(view_options(Some(true), None, None), ViewOptions { read_only: true, chrome: true, zoom_controls: true });
+        assert_eq!(view_options(None, None, None), ViewOptions { read_only: false, chrome: true, zoom_controls: false });
+        assert_eq!(view_options(Some(true), None, None), ViewOptions { read_only: true, chrome: true, zoom_controls: false });
         assert_eq!(view_options(Some(true), Some(false), Some(false)), ViewOptions { read_only: true, chrome: false, zoom_controls: false });
     }
 

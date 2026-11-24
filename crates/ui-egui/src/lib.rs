@@ -347,6 +347,9 @@ pub struct SheetApp {
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
     /// What the host's `open` messages asked for, one per file still to come through the inbox, in order.
     pub open_queue: std::collections::VecDeque<HostOpen>,
+    /// A host open waiting behind a password prompt: the policy to put back if the prompt is cancelled
+    /// (`Some(None)`: the open had options but the app had no policy before).
+    pub password_restore: Option<Option<Vec<(String, bool)>>>,
     pub control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
     pub grid: grid::GridState,
     pub perf: Perf,
@@ -408,6 +411,7 @@ impl SheetApp {
             print_feedback_seen: None,
             synthetic: Default::default(),
             open_queue: Default::default(),
+            password_restore: None,
             control_rx: None,
             grid: grid::GridState {
                 autosave: false,
@@ -460,7 +464,9 @@ impl SheetApp {
 
     /// Is `id` a command of the host-locked app that is off now (so its control is shown dimmed)?
     pub fn switched_off(&self, id: &str) -> bool {
-        self.host_locked() && host_lock::grade(id).is_some() && !self.allowed(id)
+        // A read-only document refuses its edit commands (silently), so their buttons are washed out too.
+        let read_only_refused = self.session.read_only() && gridcraft_engine::hostlock::READ_ONLY_BLOCKED.binary_search(&id).is_ok();
+        self.host_locked() && ((host_lock::grade(id).is_some() && !self.allowed(id)) || read_only_refused)
     }
 
     /// May the File tab show `page`? Options stays; Info (properties and Protect Workbook) and
@@ -1332,6 +1338,8 @@ impl SheetApp {
                 }
                 Err(e) if e.contains(gridcraft_engine::io::PASSWORD_REQUIRED) => {
                     self.backstage = None;
+                    // Cancelling the prompt abandons this open: its options go back (see `dialogs`).
+                    self.password_restore = policy_before;
                     self.open_dialog("openPassword", json!({"name": name, "base64": b64}));
                 }
                 Err(e) => {

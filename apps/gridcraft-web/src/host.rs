@@ -10,7 +10,7 @@
 //!   without them is the plain editor): `readOnly` lets nothing edit it and nothing save it (the parent hears
 //!   no `dirty`, and `request-bytes` with purpose `save` is answered `bytes-failed` with `read-only`);
 //!   `chrome: false` hides the title bar, ribbon, formula bar, status bar and task panes and the ways to
-//!   write comments and notes (the sheet tabs stay); `zoomControls` (default true) keeps the zoom buttons
+//!   write comments and notes (the sheet tabs stay); `zoomControls` (default false) keeps the zoom buttons
 //!   when the chrome is hidden. Each option takes effect with the file it came with, never on another.
 //!   `policy` is `{ overrides: { "<command id>": true | false } }` with the commands that differ
 //!   from their grade (see `commands.json`); in the PPM build `true` turns an off command on and

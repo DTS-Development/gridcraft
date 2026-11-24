@@ -176,9 +176,46 @@ fn chrome_false_hides_the_editing_chrome_and_keeps_the_sheet_tabs_and_zoom() {
     host_open(&mut h, &inbox, ViewOptions { chrome: false, ..ViewOptions::default() });
     assert!(h.query_by_label("Paste").is_none(), "the ribbon is gone");
     assert!(h.query_by_label("All sheets").is_some(), "the sheet tabs stay");
-    assert!(h.query_by_label("100%").is_some(), "the zoom buttons stay");
-    host_open(&mut h, &inbox, ViewOptions { chrome: false, zoom_controls: false, ..ViewOptions::default() });
-    assert!(h.query_by_label("100%").is_none(), "zoomControls false removes them");
+    assert!(h.query_by_label("100%").is_none(), "zoomControls defaults to false, like word and deck");
+    host_open(&mut h, &inbox, ViewOptions { chrome: false, zoom_controls: true, ..ViewOptions::default() });
+    assert!(h.query_by_label("100%").is_some(), "zoomControls keeps the zoom buttons");
+}
+
+#[test]
+fn a_read_only_find_dialog_has_no_replace_tab() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    h.state_mut().open_dialog("find", json!({"replace": true}));
+    h.run_steps(3);
+    assert!(h.query_by_label("Replace All").is_some(), "a plain document replaces");
+    h.state_mut().dialog = None;
+    host_open(&mut h, &inbox, read_only());
+    h.state_mut().open_dialog("find", json!({"replace": true}));
+    h.run_steps(3);
+    assert!(h.query_by_label("Find All").is_some(), "the Find tab is there");
+    assert!(h.query_by_label("Replace").is_none(), "the Replace tab is not offered");
+    assert!(h.query_by_label("Replace All").is_none());
+}
+
+#[test]
+fn cancelling_the_password_prompt_puts_the_opens_options_back() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    let before = h.state().session.host_policy().unwrap().overrides();
+    // What `logic` leaves behind when a host open stops at the password prompt.
+    h.state_mut().session.set_policy(&[("file.print".to_string(), true)]);
+    h.state_mut().session.set_next_view(Some(read_only()));
+    h.state_mut().password_restore = Some(Some(before.clone()));
+    h.state_mut().open_dialog("openPassword", json!({"name": "locked.xlsx", "base64": ""}));
+    h.run_steps(3);
+    h.input_mut().events.extend(key(Key::Escape, Modifiers::NONE));
+    h.run_steps(3);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(h.state().session.host_policy().unwrap().overrides(), before, "the policy goes back");
+    // The abandoned options must not leak into the next open.
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+    h.run_steps(4);
+    assert!(!h.state().session.read_only(), "the next open is the plain editor");
 }
 
 #[test]

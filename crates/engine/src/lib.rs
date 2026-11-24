@@ -136,7 +136,7 @@ pub struct ViewOptions {
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        ViewOptions { read_only: false, chrome: true, zoom_controls: true }
+        ViewOptions { read_only: false, chrome: true, zoom_controls: false }
     }
 }
 
