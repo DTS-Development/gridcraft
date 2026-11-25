@@ -47,7 +47,7 @@ fn harness() -> (Harness, Inbox, Downloads) {
 
 /// What the host's open message does: the options are queued, the file comes through the inbox.
 fn host_open(h: &mut Harness, inbox: &Inbox, view: ViewOptions) {
-    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![], view });
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![], view, ..Default::default() });
     inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
     h.run_steps(4);
 }
@@ -155,12 +155,12 @@ fn an_open_without_options_is_the_plain_editor_again() {
 #[test]
 fn a_failed_open_keeps_the_earlier_document_as_it_was() {
     let (mut h, inbox, _) = harness();
-    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), true)], view: read_only() });
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), true)], view: read_only(), ..Default::default() });
     inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
     h.run_steps(4);
     let before = h.state().session.host_policy().unwrap().overrides();
     assert_eq!(before, vec![("file.print".to_string(), true)]);
-    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), false), ("home.bold".into(), false)], view: ViewOptions::default() });
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![("file.print".into(), false), ("home.bold".into(), false)], view: ViewOptions::default(), ..Default::default() });
     inbox.lock().unwrap().push(("broken.xlsx".into(), b"PK\x03\x04 not really a workbook".to_vec()));
     h.run_steps(4);
     assert_eq!(h.state().session.documents().len(), 1);
@@ -390,7 +390,7 @@ fn every_ribbon_control_of_a_read_only_workbook_is_inert_and_the_edit_ones_are_w
 fn the_table_and_chart_design_tabs_of_a_read_only_workbook_are_inert_and_washed_out() {
     let (mut h, inbox, _) = harness();
     inbox.lock().unwrap().push(("book.xlsx".into(), xlsx_table_chart()));
-    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![], view: read_only() });
+    h.state_mut().open_queue.push_back(HostOpen { overrides: vec![], view: read_only(), ..Default::default() });
     h.run_steps(4);
     let chart = h.state().session.active().unwrap().wb.active().unwrap().charts.first().map(|c| c.id);
     assert!(chart.is_some(), "the test workbook has a chart");
@@ -407,7 +407,7 @@ fn an_editable_document_keeps_its_labels_while_a_read_only_one_washes_them() {
     let off = vec![("home.wrapText".to_string(), false), ("home.mergeCenter".to_string(), false)];
     for (view, washed) in [(ViewOptions::default(), false), (read_only(), true)] {
         let (mut h, inbox, _) = harness();
-        h.state_mut().open_queue.push_back(HostOpen { overrides: off.clone(), view });
+        h.state_mut().open_queue.push_back(HostOpen { overrides: off.clone(), view, ..Default::default() });
         inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
         h.run_steps(4);
         let app = h.state();
@@ -433,4 +433,33 @@ fn an_editable_document_still_opens_the_editing_dialogs() {
     h.state_mut().dialog = None;
     h.state_mut().open_dialog("formatCells", json!({}));
     assert!(h.state().dialog.is_none(), "and not in a read-only one");
+}
+
+/// `keepView`: the new workbook replaces the open one and shows its sheet, cell, zoom and scroll again.
+#[test]
+fn keep_view_open_replaces_in_place_and_restores_the_view() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    {
+        let app = h.state_mut();
+        app.session.execute("view.zoom", json!({"percent": 150})).unwrap();
+        app.session.active_mut().unwrap().selection = gridcraft_engine::Selection::at(CellRef::new(4, 2));
+        let k = app.view_key().unwrap();
+        app.views.insert(k, gridcraft_ui_egui::SheetView { scroll: egui::vec2(0.0, 120.0) });
+    }
+    let before = h.state().session.active().unwrap().selection.clone();
+    assert_eq!(before.active, CellRef::new(4, 2));
+    h.state_mut().open_queue.push_back(HostOpen { keep_view: true, ..Default::default() });
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+    h.run_steps(4);
+    let app = h.state();
+    assert_eq!(app.session.documents().len(), 1, "the old workbook is gone");
+    let d = app.session.active().unwrap();
+    assert_eq!(d.wb.active().unwrap().zoom, 150);
+    assert_eq!(d.selection, before);
+    assert!(!d.is_dirty(), "putting the view back is no edit");
+    assert_eq!(app.view().scroll, egui::vec2(0.0, 120.0));
+    // Without keepView the next open is one more workbook, as before.
+    host_open(&mut h, &inbox, ViewOptions::default());
+    assert_eq!(h.state().session.documents().len(), 2);
 }
