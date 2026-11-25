@@ -20,6 +20,8 @@
 //!   file GridCraft would otherwise download: Save and Save As (an .xlsx workbook) and Export
 //!   as PDF. The parent stores it and reports failures itself.
 //! - `gridcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
+//! - `gridcraft:edited` (to the parent): `{ rev }` after a pass in which the workbook has unsaved changes and its revision moved; only for a workbook opened with `live: true`. `dirty` only flips, so this is how the parent sees that editing goes on.
+//! - `gridcraft:open` also takes `live` (send `edited`, default false) and `keepView` (the workbook replaces the open ones in place: its sheet, cell, zoom and scroll are put back on the new one as far as it has the places, default false).
 //! - `gridcraft:failed` (to the parent): `{ error }` when the app couldn't start.
 //! - `gridcraft:export` (from the parent, PPM build opened with `&jsontools=1` only): `{ id }`, a
 //!   request for the active workbook as GridCraft JSON, as it is now (unsaved edits included).
@@ -76,6 +78,9 @@ pub struct Bridge {
     saved: Rc<RefCell<Vec<String>>>,
     /// The unsaved-changes state last reported to the parent.
     reported: Rc<Cell<Option<bool>>>,
+    /// The last open message asked for `edited` events (`live`), and the revision last reported.
+    live: Rc<Cell<bool>>,
+    edited: Rc<Cell<Option<(u64, u64)>>>,
     /// The options of each `gridcraft:open` (one per file, in order), until the next frame hands them to the app.
     opens: Rc<RefCell<Vec<gridcraft_ui_egui::HostOpen>>>,
     /// A `gridcraft:open` has arrived, so there is a workbook to answer `gridcraft:request-bytes` with.
@@ -114,6 +119,8 @@ impl Bridge {
             origin,
             saved: Rc::default(),
             reported: Rc::default(),
+            live: Rc::default(),
+            edited: Rc::default(),
             opens: Rc::default(),
             opened: Rc::default(),
             byte_requests: Rc::default(),
@@ -192,8 +199,19 @@ impl Bridge {
         #[cfg(feature = "ppm-host")]
         self.answer_exports(app);
         let dirty = app.session.documents().iter().any(|d| d.is_dirty());
+        self.report_edited(app);
         if self.reported.get() != Some(dirty) && self.send(&[("type", "gridcraft:dirty".into()), ("dirty", dirty.into())]) {
             self.reported.set(Some(dirty));
+        }
+    }
+
+    /// With `live`, the parent also hears that editing goes on (`dirty` only flips): the revision of the
+    /// active workbook, when it has unsaved changes and the revision (or the workbook) moved.
+    fn report_edited(&self, app: &SheetApp) {
+        let Some(d) = app.session.active().filter(|d| self.live.get() && d.is_dirty()) else { return };
+        let key = (d.uid, d.revision);
+        if self.edited.get() != Some(key) && self.send(&[("type", "gridcraft:edited".into()), ("rev", (d.revision as f64).into())]) {
+            self.edited.set(Some(key));
         }
     }
 
@@ -323,6 +341,8 @@ impl Bridge {
         let json_tools = self.json_tools;
         #[cfg(feature = "ppm-host")]
         let replace = self.replace.clone();
+        let live = self.live.clone();
+        let edited = self.edited.clone();
         let origin = self.origin.clone();
         let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
@@ -406,9 +426,12 @@ impl Bridge {
             }
             let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
             let Some(bytes) = bytes(&data) else { return };
+            live.set(boolean(&data, "live") == Some(true));
+            edited.set(None);
             opens.borrow_mut().push(gridcraft_ui_egui::HostOpen {
                 overrides: policy_overrides(&data),
                 view: crate::gate::view_options(boolean(&data, "readOnly"), boolean(&data, "chrome"), boolean(&data, "zoomControls")),
+                keep_view: boolean(&data, "keepView") == Some(true),
             });
             #[cfg(feature = "ppm-host")]
             if json_tools {

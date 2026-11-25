@@ -71,7 +71,7 @@ pub fn workbook_json(wb: &gridcraft_engine::model::Workbook) -> Result<Vec<u8>, 
 }
 
 /// The open options of the host's `gridcraft:open` this build understands (sent with `gridcraft:ready`).
-pub const OPEN_OPTIONS: &[&str] = &["readOnly", "chrome", "zoomControls"];
+pub const OPEN_OPTIONS: &[&str] = &["readOnly", "chrome", "zoomControls", "live", "keepView"];
 
 /// How a workbook is shown, from the booleans of the host's open message (`readOnly`, `chrome`,
 /// `zoomControls`). One that is not given keeps today's behaviour: editable, with the chrome and zoom.
@@ -286,7 +286,7 @@ mod tests {
     fn view_options_default_to_the_plain_editor_and_take_only_what_is_given() {
         use gridcraft_engine::ViewOptions;
         assert_eq!(view_options(None, None, None), ViewOptions::default());
-        assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls"], "the names the host's open message uses");
+        assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls", "live", "keepView"], "the names the host's open message uses");
         assert_eq!(view_options(None, None, None), ViewOptions { read_only: false, chrome: true, zoom_controls: false });
         assert_eq!(view_options(Some(true), None, None), ViewOptions { read_only: true, chrome: true, zoom_controls: false });
         assert_eq!(view_options(Some(true), Some(false), Some(false)), ViewOptions { read_only: true, chrome: false, zoom_controls: false });

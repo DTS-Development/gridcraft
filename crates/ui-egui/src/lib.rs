@@ -51,6 +51,18 @@ pub use control::{ControlRequest, ControlResponse};
 pub struct HostOpen {
     pub overrides: Vec<(String, bool)>,
     pub view: gridcraft_engine::ViewOptions,
+    /// `keepView`: the file replaces the open workbook in place; the sheet, cell, zoom and scroll it
+    /// was showing carry over to the new one (see [`KeptView`]).
+    pub keep_view: bool,
+}
+
+/// What was on screen in the workbook a `keepView` open replaces: the sheet and cell, and per sheet the
+/// zoom and scroll. A sheet the new workbook lacks is skipped.
+struct KeptView {
+    sheet: usize,
+    selection: gridcraft_engine::Selection,
+    zooms: Vec<u16>,
+    scrolls: Vec<(usize, SheetView)>,
 }
 pub mod desktop_theme;
 
@@ -1057,6 +1069,44 @@ impl SheetApp {
         self.session.active().map(|d| (d.uid, d.wb.active_sheet))
     }
 
+    /// The active workbook's sheet, cell, zoom and scroll, for a `keepView` open.
+    fn capture_view(&self) -> Option<KeptView> {
+        let d = self.session.active()?;
+        let scrolls = self.views.iter().filter(|((uid, _), _)| *uid == d.uid).map(|((_, si), v)| (*si, *v)).collect();
+        Some(KeptView { sheet: d.wb.active_sheet, selection: d.selection.clone(), zooms: d.wb.sheets.iter().map(|s| s.zoom).collect(), scrolls })
+    }
+
+    /// The workbook that just opened takes the place of the older ones and shows what they showed.
+    fn replace_with_kept(&mut self, kept: KeptView) {
+        let Some(d) = self.session.active_mut() else { return };
+        let uid = d.uid;
+        let n = d.wb.sheets.len();
+        // Zoom is saved in the file, so putting it back must not make the new workbook dirty.
+        let dirty = d.is_dirty();
+        let wb = std::sync::Arc::make_mut(&mut d.wb);
+        for (si, z) in kept.zooms.iter().enumerate().take(n) {
+            if let Some(sh) = wb.sheet_mut(si) {
+                sh.zoom = *z;
+            }
+        }
+        if kept.sheet < n {
+            wb.active_sheet = kept.sheet;
+            d.selection = kept.selection;
+        }
+        if !dirty {
+            d.saved = d.wb.clone();
+        }
+        self.views.retain(|(u, _), _| *u != uid);
+        for (si, v) in kept.scrolls {
+            if si < n {
+                self.views.insert((uid, si), v);
+            }
+        }
+        while self.session.documents().len() > 1 {
+            self.session.close_document(0);
+        }
+    }
+
     pub fn view(&self) -> SheetView {
         self.view_key().and_then(|k| self.views.get(&k).copied()).unwrap_or_else(|| self.saved_view())
     }
@@ -1359,15 +1409,21 @@ impl SheetApp {
             let b64 = gridcraft_engine::io::base64_encode(&bytes);
             // A host's open brings its own policy and view options, set just before this file opens
             // (it may sit behind a password prompt: the options wait for the open that succeeds).
+            let mut keep_view = false;
             let policy_before = self.open_queue.pop_front().map(|o| {
+                keep_view = o.keep_view;
                 let before = self.session.host_policy().map(|p| p.overrides());
                 self.session.set_policy(&o.overrides);
                 self.session.set_next_view(Some(o.view));
                 before
             });
+            let kept = keep_view.then(|| self.capture_view()).flatten();
             match self.run("file.open", json!({"name": &name, "base64": &b64})) {
                 // A file picked from File › Open (web) arrives here: show it, not the Backstage.
                 Ok(r) => {
+                    if let Some(kept) = kept {
+                        self.replace_with_kept(kept);
+                    }
                     self.backstage = None;
                     // A header being edited in the earlier document must not be written into this one.
                     paper_view::cancel(self);
