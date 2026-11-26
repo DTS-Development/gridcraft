@@ -810,6 +810,7 @@ fn paint_panes(
         let p = painter.with_clip_rect(*clip);
         paint_quadrant(&p, geo, wb, si, sh, *rows, *cols, cf, t);
         paint_selection(&p, geo, sh, sel, outline, t, app, *rows, *cols);
+        crate::remote_cursors::paint(&p, geo, sh, si, &app.remote.list, *rows, *cols);
     }
     // Freeze lines.
     if geo.fr > 0 {
@@ -1574,7 +1575,7 @@ fn rect_around(area: Rect, hole: Rect) -> impl Iterator<Item = Rect> {
 /// True when `r` covers at least one cell of the pane that shows `rows` x `cols` (inclusive).
 /// The panes of a frozen sheet share one coordinate system, so a range that lives only in the
 /// scrolling pane would otherwise be drawn over the frozen pane as well.
-fn range_in_pane(r: RangeRef, rows: (u32, u32), cols: (u32, u32)) -> bool {
+pub(crate) fn range_in_pane(r: RangeRef, rows: (u32, u32), cols: (u32, u32)) -> bool {
     r.start.row <= rows.1 && r.end.row >= rows.0 && r.start.col <= cols.1 && r.end.col >= cols.0
 }
 

@@ -463,3 +463,53 @@ fn keep_view_open_replaces_in_place_and_restores_the_view() {
     host_open(&mut h, &inbox, ViewOptions::default());
     assert_eq!(h.state().session.documents().len(), 2);
 }
+
+fn others() -> serde_json::Value {
+    json!({"cursors": [
+        {"conn": 1, "user": "a", "name": "Kim", "color": "#ff8800", "role": "edit", "region": "sheet:0", "pos": {"r1": 2, "c1": 1, "r2": 4, "c2": 3}},
+        {"conn": 2, "user": "b", "name": "Lee", "color": "#0088ff", "role": "view", "region": "sheet:0", "pos": {"r1": 0, "c1": 0, "r2": 0, "c2": 0}},
+        {"conn": 3, "user": "c", "name": "Park", "color": "#00cc66", "role": "edit", "region": "sheet:7", "pos": {"r1": 0, "c1": 0, "r2": 1048576, "c2": 0}}]})
+}
+
+#[test]
+fn cursors_open_sends_the_place_once_and_draws_the_others_without_an_edit() {
+    let (mut h, inbox, _) = harness();
+    h.state_mut().open_queue.push_back(HostOpen { cursors: true, ..Default::default() });
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+    h.run_steps(4);
+    let first = h.state_mut().cursor_message().expect("the first place is sent");
+    assert_eq!(first["region"], "sheet:0");
+    assert_eq!(first["pos"], json!({"r1": 0, "c1": 0, "r2": 0, "c2": 0}));
+    assert!(h.state_mut().cursor_message().is_none(), "the same place isn't sent twice");
+    // A moved selection is one more message.
+    h.state_mut().session.active_mut().unwrap().selection = gridcraft_engine::Selection::range(gridcraft_engine::core::RangeRef::new(CellRef::new(1, 1), CellRef::new(3, 2)));
+    let moved = h.state_mut().cursor_message().expect("a moved selection is sent");
+    assert_eq!(moved["pos"], json!({"r1": 1, "c1": 1, "r2": 3, "c2": 2}));
+    // The others are drawn (one entry is out of range and skipped) and nothing counts as an edit.
+    let (rev, dirty) = {
+        let d = h.state().session.active().unwrap();
+        (d.revision, d.is_dirty())
+    };
+    h.state_mut().remote.receive(&others());
+    assert_eq!(h.state().remote.list.len(), 2);
+    h.run_steps(4);
+    let d = h.state().session.active().unwrap();
+    assert_eq!((d.revision, d.is_dirty()), (rev, dirty));
+    assert!(d.undo.is_empty());
+    // A new open drops them.
+    h.state_mut().open_queue.push_back(HostOpen { cursors: true, ..Default::default() });
+    inbox.lock().unwrap().push(("book.xlsx".into(), xlsx()));
+    h.run_steps(4);
+    assert!(h.state().remote.list.is_empty());
+}
+
+#[test]
+fn without_cursors_nothing_is_sent_and_the_others_are_ignored() {
+    let (mut h, inbox, _) = harness();
+    host_open(&mut h, &inbox, ViewOptions::default());
+    assert!(h.state_mut().cursor_message().is_none());
+    h.state_mut().remote.receive(&others());
+    assert!(h.state().remote.list.is_empty());
+    h.run_steps(2);
+    assert!(h.state_mut().cursor_message().is_none());
+}

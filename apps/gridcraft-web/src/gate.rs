@@ -71,7 +71,11 @@ pub fn workbook_json(wb: &gridcraft_engine::model::Workbook) -> Result<Vec<u8>, 
 }
 
 /// The open options of the host's `gridcraft:open` this build understands (sent with `gridcraft:ready`).
-pub const OPEN_OPTIONS: &[&str] = &["readOnly", "chrome", "zoomControls", "live", "keepView"];
+pub const OPEN_OPTIONS: &[&str] = &["readOnly", "chrome", "zoomControls", "live", "keepView", "cursors"];
+
+/// The longest `collab-cursors` message taken, in characters of its JSON: 200 people with a name, a colour and a
+/// place of at most 1 KiB each fit; a longer one is dropped.
+pub const MAX_CURSORS_JSON: usize = 512 * 1024;
 
 /// How a workbook is shown, from the booleans of the host's open message (`readOnly`, `chrome`,
 /// `zoomControls`). One that is not given keeps today's behaviour: editable, with the chrome and zoom.
@@ -286,7 +290,7 @@ mod tests {
     fn view_options_default_to_the_plain_editor_and_take_only_what_is_given() {
         use gridcraft_engine::ViewOptions;
         assert_eq!(view_options(None, None, None), ViewOptions::default());
-        assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls", "live", "keepView"], "the names the host's open message uses");
+        assert_eq!(OPEN_OPTIONS, ["readOnly", "chrome", "zoomControls", "live", "keepView", "cursors"], "the names the host's open message uses");
         assert_eq!(view_options(None, None, None), ViewOptions { read_only: false, chrome: true, zoom_controls: false });
         assert_eq!(view_options(Some(true), None, None), ViewOptions { read_only: true, chrome: true, zoom_controls: false });
         assert_eq!(view_options(Some(true), Some(false), Some(false)), ViewOptions { read_only: true, chrome: false, zoom_controls: false });

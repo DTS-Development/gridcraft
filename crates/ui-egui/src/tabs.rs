@@ -68,6 +68,8 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                     .filter(|(_, s)| s.visibility == Visibility::Visible)
                     .map(|(i, s)| (i, s.name.clone(), s.tab_color.and_then(|c| c.resolve(&d.wb.theme)), i == d.wb.active_sheet))
                     .collect();
+            // Who else is on which sheet (a shared workbook opened with `cursors`).
+            let marks: Vec<Option<crate::remote_cursors::TabMark>> = sheets.iter().map(|(i, ..)| crate::remote_cursors::tab_mark(&app.remote, *i)).collect();
             // Keep worksheet tabs in their own horizontally scrollable viewport. As in Excel, the
             // tabs get 60% of the bar and the grid's horizontal scrollbar the rest.
             let tabs_width = (ui.available_width() * 0.6).max(100.0);
@@ -102,7 +104,7 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                         }
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
-                            for (i, name, color, active) in sheets {
+                            for ((i, name, color, active), mark) in sheets.into_iter().zip(marks) {
                                 let renaming = app.grid.renaming_tab == Some(i);
                                 let font = if active { theme::ui_bold(13.0) } else { theme::ui_font(13.0) };
                                 let tw = ui.painter().layout_no_wrap(name.clone(), font.clone(), t.text).size().x;
@@ -148,6 +150,13 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                                 } else {
                                     ui.painter().text(r.center(), Align2::CENTER_CENTER, &name, font, if active { t.accent } else { t.text });
                                 }
+                                let resp = match &mark {
+                                    Some(m) => {
+                                        crate::remote_cursors::paint_tab_mark(ui.painter(), r, m);
+                                        resp.on_hover_text(&m.names)
+                                    }
+                                    None => resp,
+                                };
                                 if resp.clicked() {
                                     activate_sheet(app, i);
                                 }

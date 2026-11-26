@@ -22,6 +22,9 @@
 //! - `gridcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
 //! - `gridcraft:edited` (to the parent): `{ rev }` after a pass in which the workbook has unsaved changes and its revision moved; only for a workbook opened with `live: true`. `dirty` only flips, so this is how the parent sees that editing goes on.
 //! - `gridcraft:open` also takes `live` (send `edited`, default false) and `keepView` (the workbook replaces the open ones in place: its sheet, cell, zoom and scroll are put back on the new one as far as it has the places, default false).
+//! - `gridcraft:open` also takes `cursors` (default false): the editor then sends where it is and draws where the others are. Without it nothing is sent and the others' places are ignored.
+//! - `gridcraft:collab-cursor` (to the parent, with `cursors`): `{ region, pos? }`, the open sheet `sheet:<index>` (0-based) and the selected range `{ r1, c1, r2, c2 }` (0-based, `r1 <= r2`, `c1 <= c2`; the one cell while it is being edited), only when it changed. `region: null` clears it (no workbook open). Read-only workbooks send it too.
+//! - `gridcraft:collab-cursors` (from the parent, with `cursors`): `{ cursors: [{ conn, user, name, color, role, region, pos? }] }`, the other connections, replacing the last list. Each one with a `sheet:<index>` region and a readable `pos` is drawn on the grid (an outline, a light fill and a name tag in its colour) and its sheet tab gets a dot; others are skipped. The list is dropped when a workbook is opened.
 //! - `gridcraft:failed` (to the parent): `{ error }` when the app couldn't start.
 //! - `gridcraft:export` (from the parent, PPM build opened with `&jsontools=1` only): `{ id }`, a
 //!   request for the active workbook as GridCraft JSON, as it is now (unsaved edits included).
@@ -81,6 +84,8 @@ pub struct Bridge {
     /// The last open message asked for `edited` events (`live`), and the revision last reported.
     live: Rc<Cell<bool>>,
     edited: Rc<Cell<Option<(u64, u64)>>>,
+    /// The latest `gridcraft:collab-cursors` not yet handed to the app (a newer list replaces it).
+    cursors_in: Rc<RefCell<Option<serde_json::Value>>>,
     /// The options of each `gridcraft:open` (one per file, in order), until the next frame hands them to the app.
     opens: Rc<RefCell<Vec<gridcraft_ui_egui::HostOpen>>>,
     /// A `gridcraft:open` has arrived, so there is a workbook to answer `gridcraft:request-bytes` with.
@@ -121,6 +126,7 @@ impl Bridge {
             reported: Rc::default(),
             live: Rc::default(),
             edited: Rc::default(),
+            cursors_in: Rc::default(),
             opens: Rc::default(),
             opened: Rc::default(),
             byte_requests: Rc::default(),
@@ -200,6 +206,7 @@ impl Bridge {
         self.answer_exports(app);
         let dirty = app.session.documents().iter().any(|d| d.is_dirty());
         self.report_edited(app);
+        self.report_cursor(app);
         if self.reported.get() != Some(dirty) && self.send(&[("type", "gridcraft:dirty".into()), ("dirty", dirty.into())]) {
             self.reported.set(Some(dirty));
         }
@@ -212,6 +219,20 @@ impl Bridge {
         let key = (d.uid, d.revision);
         if self.edited.get() != Some(key) && self.send(&[("type", "gridcraft:edited".into()), ("rev", (d.revision as f64).into())]) {
             self.edited.set(Some(key));
+        }
+    }
+
+    /// With `cursors`, the parent hears where this editor is (sheet and selected range) when that
+    /// changed. A send that fails is tried again next frame.
+    fn report_cursor(&self, app: &mut SheetApp) {
+        let Some(body) = app.cursor_message() else { return };
+        let region = body.get("region").and_then(|r| r.as_str()).map_or(JsValue::NULL, JsValue::from);
+        let mut fields = vec![("type", "gridcraft:collab-cursor".into()), ("region", region)];
+        if let Some(pos) = body.get("pos").and_then(|p| js_sys::JSON::parse(&p.to_string()).ok()) {
+            fields.push(("pos", pos));
+        }
+        if !self.send(&fields) {
+            app.remote.forget_sent();
         }
     }
 
@@ -327,11 +348,15 @@ impl Bridge {
     /// file's options just before it opens that file (so a later open cannot change an earlier one's).
     pub fn apply_opens(&self, app: &mut SheetApp) {
         app.open_queue.extend(std::mem::take(&mut *self.opens.borrow_mut()));
+        if let Some(m) = self.cursors_in.borrow_mut().take() {
+            app.remote.receive(&m);
+        }
     }
 
     fn listen(&self, inbox: Inbox, ctx: egui::Context) {
         let parent = self.parent.clone();
         let opens = self.opens.clone();
+        let cursors_in = self.cursors_in.clone();
         let opened = self.opened.clone();
         let byte_requests = self.byte_requests.clone();
         let gotos = self.gotos.clone();
@@ -421,17 +446,33 @@ impl Bridge {
                     }
                     return;
                 }
+                Some("gridcraft:collab-cursors") => {
+                    // Plain JSON by the wire contract; anything else (or too big) is dropped. Only the latest list matters.
+                    let list = js_sys::JSON::stringify(&data)
+                        .ok()
+                        .and_then(|s| s.as_string())
+                        .filter(|s| s.len() <= crate::gate::MAX_CURSORS_JSON)
+                        .and_then(|s| serde_json::from_str(&s).ok());
+                    if let Some(list) = list {
+                        *cursors_in.borrow_mut() = Some(list);
+                        ctx.request_repaint();
+                    }
+                    return;
+                }
                 Some("gridcraft:open") => {}
                 _ => return,
             }
             let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
             let Some(bytes) = bytes(&data) else { return };
+            // The list of the earlier workbook is no use to this one.
+            *cursors_in.borrow_mut() = None;
             live.set(boolean(&data, "live") == Some(true));
             edited.set(None);
             opens.borrow_mut().push(gridcraft_ui_egui::HostOpen {
                 overrides: policy_overrides(&data),
                 view: crate::gate::view_options(boolean(&data, "readOnly"), boolean(&data, "chrome"), boolean(&data, "zoomControls")),
                 keep_view: boolean(&data, "keepView") == Some(true),
+                cursors: boolean(&data, "cursors") == Some(true),
             });
             #[cfg(feature = "ppm-host")]
             if json_tools {

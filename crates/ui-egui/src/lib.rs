@@ -28,6 +28,7 @@ pub mod panes;
 pub mod paper_view;
 pub mod pivot_pane;
 pub mod printing;
+pub mod remote_cursors;
 pub mod ribbon;
 pub mod selection_glide;
 pub mod tabs;
@@ -54,6 +55,9 @@ pub struct HostOpen {
     /// `keepView`: the file replaces the open workbook in place; the sheet, cell, zoom and scroll it
     /// was showing carry over to the new one (see [`KeptView`]).
     pub keep_view: bool,
+    /// `cursors`: this editor sends its place (sheet and selected range) and draws the others'
+    /// (see [`remote_cursors`]).
+    pub cursors: bool,
 }
 
 /// What was on screen in the workbook a `keepView` open replaces: the sheet and cell, and per sheet the
@@ -368,6 +372,9 @@ pub struct SheetApp {
     pub synthetic: std::collections::VecDeque<Vec<egui::Event>>,
     /// What the host's `open` messages asked for, one per file still to come through the inbox, in order.
     pub open_queue: std::collections::VecDeque<HostOpen>,
+    /// The other people of a shared workbook: where they are (the parent's `collab-cursors`) and
+    /// what of this editor's place the parent heard. Idle unless the open asked for `cursors`.
+    pub remote: remote_cursors::Remote,
     /// The ribbon controls washed out in the last frame (command ids, or tooltips of unnamed controls): a
     /// read-only document's edit buttons. Empty for an editable document.
     pub ribbon_dimmed: Vec<String>,
@@ -439,6 +446,7 @@ impl SheetApp {
             print_feedback_seen: None,
             synthetic: Default::default(),
             open_queue: Default::default(),
+            remote: Default::default(),
             ribbon_dimmed: Vec::new(),
             ribbon_controls: Vec::new(),
             ribbon_overflow: false,
@@ -1069,6 +1077,17 @@ impl SheetApp {
         self.session.active().map(|d| (d.uid, d.wb.active_sheet))
     }
 
+    /// The `collab-cursor` message body to send now: this editor's sheet and selected range (the
+    /// one cell while it is being edited), when it differs from what the parent last heard. `None`
+    /// when nothing changed or the workbook wasn't opened with `cursors`.
+    pub fn cursor_message(&mut self) -> Option<Json> {
+        let place = self.session.active().map(|d| {
+            let range = if self.editor.is_some() { RangeRef::cell(d.selection.active) } else { d.selection.current() };
+            (d.wb.active_sheet, range)
+        });
+        self.remote.outgoing(place)
+    }
+
     /// The active workbook's sheet, cell, zoom and scroll, for a `keepView` open.
     fn capture_view(&self) -> Option<KeptView> {
         let d = self.session.active()?;
@@ -1410,7 +1429,10 @@ impl SheetApp {
             // A host's open brings its own policy and view options, set just before this file opens
             // (it may sit behind a password prompt: the options wait for the open that succeeds).
             let mut keep_view = false;
-            let policy_before = self.open_queue.pop_front().map(|o| {
+            let opened = self.open_queue.pop_front();
+            // The others' places of the workbook this replaces mean nothing in the new one.
+            self.remote.opened(opened.as_ref().is_some_and(|o| o.cursors));
+            let policy_before = opened.map(|o| {
                 keep_view = o.keep_view;
                 let before = self.session.host_policy().map(|p| p.overrides());
                 self.session.set_policy(&o.overrides);
