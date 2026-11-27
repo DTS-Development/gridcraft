@@ -24,13 +24,14 @@ fn main() {
     if let Err(e) = std::fs::write(&out, generate(&json, &people)) {
         println!("cargo::warning=writing {}: {e}", out.display());
     }
-    embed_korean_font();
+    embed_script_font("Kore", "KOREAN_FONT", "korean_font.rs");
+    embed_script_font("Jpan", "JAPANESE_FONT", "japanese_font.rs");
     embed_office_fonts();
 }
 
 /// The families of the Office-compatible set a web build embeds (their licences travel with them):
 /// the Latin twins, then the Korean faces beside NanumGothic (whose Regular is `KOREAN_FONT`, see
-/// `embed_korean_font`; only its Bold is listed here).
+/// `embed_script_font`; only its Bold is listed here).
 const OFFICE_FAMILIES: &[&str] =
     &["Carlito", "Caladea", "Liberation Sans", "Liberation Serif", "Liberation Mono", "NanumMyeongjo", "NanumGothicCoding", "Black Han Sans", "Pretendard", "Noto Sans KR", "Noto Serif KR", "Gowun Batang"];
 
@@ -76,11 +77,13 @@ fn embed_office_fonts() {
     }
 }
 
-/// With `CRAFT_FONTS_DIR=<craft-fonts checkout>`, a web (wasm32) build embeds the first `Kore`
-/// face of its `fonts/manifest.txt` as `KOREAN_FONT`: the browser has no system fonts, so without
-/// it Hangul draws as boxes. Native builds read system fonts and embed nothing; unset or without a
-/// Korean face, `KOREAN_FONT` is `None`. Only reads the local checkout (no network).
-fn embed_korean_font() {
+/// With `CRAFT_FONTS_DIR=<craft-fonts checkout>`, a web (wasm32) build embeds the first Regular
+/// face of `script` (ISO 15924) in its `fonts/manifest.txt` as the static `name` (written to `out`):
+/// `Kore` is `KOREAN_FONT`, `Jpan` is `JAPANESE_FONT`. The browser has no system fonts, so without
+/// them Hangul and the kanji a Korean face lacks draw as boxes. Native builds read system fonts and
+/// embed nothing; unset or without such a face, the static is `None`. Only reads the local checkout
+/// (no network).
+fn embed_script_font(script: &str, name: &str, out: &str) {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
     let found = std::env::var_os("CRAFT_FONTS_DIR").filter(|_| wasm).and_then(|dir| {
@@ -91,7 +94,7 @@ fn embed_korean_font() {
         let file = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).find_map(|line| {
             let f: Vec<&str> = line.split(" | ").map(str::trim).collect();
             match f.as_slice() {
-                [_, "Regular", file, scripts, ..] if scripts.split(',').any(|s| s.trim() == "Kore") => Some(*file),
+                [_, "Regular", file, scripts, ..] if scripts.split(',').any(|s| s.trim() == script) => Some(*file),
                 _ => None,
             }
         })?;
@@ -100,10 +103,10 @@ fn embed_korean_font() {
         Some(path)
     });
     let src = match found {
-        Some(path) => format!("pub static KOREAN_FONT: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()),
-        None => "pub static KOREAN_FONT: Option<&[u8]> = None;\n".to_string(),
+        Some(path) => format!("pub static {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()),
+        None => format!("pub static {name}: Option<&[u8]> = None;\n"),
     };
-    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("korean_font.rs");
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join(out);
     if let Err(e) = std::fs::write(&out, src) {
         println!("cargo::warning=writing {}: {e}", out.display());
     }
