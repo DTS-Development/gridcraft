@@ -18,12 +18,14 @@ pub fn decide(host_build: bool, host_param: Option<&str>, has_bridge: bool) -> S
     if host_build && !(host_param == Some("parent") && has_bridge) { Start::OpenFromPpm } else { Start::Run }
 }
 
-/// The interface language the page starts in. The PPM build (`host_build`) always starts in Korean:
-/// it embeds a Korean font and ignores the browser's language. The upstream build follows the
-/// browser, except a CJK one, since it bundles no CJK font and that interface would render as tofu.
-pub fn start_language(host_build: bool, browser: Language) -> Language {
+/// The interface language the page starts in. The PPM build (`host_build`) starts in the language
+/// the framing page asked for (`requested`: its `?lang=` value, when it names a language GridCraft
+/// has), else Korean: it embeds Korean and Japanese fonts and ignores the browser's language. The
+/// upstream build follows the browser, except a CJK one, since it bundles no CJK font and that
+/// interface would render as tofu.
+pub fn start_language(host_build: bool, browser: Language, requested: Option<&str>) -> Language {
     if host_build {
-        Language::Ko
+        requested.and_then(Language::parse).unwrap_or(Language::Ko)
     } else if matches!(browser, Language::Zh | Language::Ja | Language::Ko) {
         Language::default()
     } else {
@@ -262,17 +264,32 @@ mod tests {
     #[test]
     fn the_ppm_build_starts_in_korean_whatever_the_browser_says() {
         for browser in Language::ALL {
-            assert_eq!(start_language(true, browser), Language::Ko);
+            assert_eq!(start_language(true, browser, None), Language::Ko);
+        }
+    }
+
+    #[test]
+    fn the_ppm_build_starts_in_the_language_the_page_asked_for() {
+        for browser in Language::ALL {
+            assert_eq!(start_language(true, browser, Some("ja")), Language::Ja);
+            assert_eq!(start_language(true, browser, Some("en")), Language::En);
+            assert_eq!(start_language(true, browser, Some("en-US")), Language::En);
+            // A code GridCraft has no catalog for, or no code at all, keeps Korean.
+            for unknown in ["", "xx", "klingon", "../ja"] {
+                assert_eq!(start_language(true, browser, Some(unknown)), Language::Ko, "{unknown:?}");
+            }
         }
     }
 
     #[test]
     fn the_upstream_build_follows_the_browser_except_cjk() {
-        assert_eq!(start_language(false, Language::De), Language::De);
-        assert_eq!(start_language(false, Language::En), Language::En);
+        assert_eq!(start_language(false, Language::De, None), Language::De);
+        assert_eq!(start_language(false, Language::En, None), Language::En);
         for cjk in [Language::Ko, Language::Ja, Language::Zh] {
-            assert_eq!(start_language(false, cjk), Language::En, "no CJK font in the upstream web build");
+            assert_eq!(start_language(false, cjk, None), Language::En, "no CJK font in the upstream web build");
         }
+        // `?lang=` is the PPM page's option: the upstream build has no font for a CJK interface.
+        assert_eq!(start_language(false, Language::De, Some("ja")), Language::De);
     }
 
     #[test]

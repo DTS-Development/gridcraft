@@ -632,12 +632,39 @@ pub(crate) fn embedded_hangul_families() -> &'static [String] {
 #[cfg(target_arch = "wasm32")]
 include!(concat!(env!("OUT_DIR"), "/korean_font.rs"));
 
-/// The browser has no system fonts: the one embedded Korean face is the fallback for Hangul.
+/// The Japanese face a web build embeds (see `build.rs`); `None` without one in the font set.
 #[cfg(target_arch = "wasm32")]
-fn load_fallback(fonts: &mut FontDefinitions, _han: HanOrder) -> Vec<String> {
-    let Some(bytes) = KOREAN_FONT else { return Vec::new() };
-    fonts.font_data.insert("web-korean".into(), Arc::new(FontData::from_static(bytes)));
-    vec!["web-korean".into()]
+include!(concat!(env!("OUT_DIR"), "/japanese_font.rs"));
+
+/// The browser has no system fonts: the embedded Korean face is the fallback for Hangul, the
+/// embedded Japanese one for kana and the kanji the Korean face lacks.
+#[cfg(target_arch = "wasm32")]
+fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<String> {
+    let mut keys = Vec::new();
+    for key in web_fallback_order(han) {
+        let bytes = if key == WEB_KOREAN { KOREAN_FONT } else { JAPANESE_FONT };
+        if let Some(bytes) = bytes {
+            fonts.font_data.insert(key.into(), Arc::new(FontData::from_static(bytes)));
+            keys.push(key.to_string());
+        }
+    }
+    keys
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+const WEB_KOREAN: &str = "web-korean";
+#[cfg(any(target_arch = "wasm32", test))]
+const WEB_JAPANESE: &str = "web-japanese";
+
+/// The embedded fallback faces of a web build, first one first. Both draw kana and the common
+/// kanji, so the order decides whose glyph shapes show: the Japanese face leads in a Japanese
+/// interface, the Korean one everywhere else (as before there was a Japanese face).
+#[cfg(any(target_arch = "wasm32", test))]
+fn web_fallback_order(han: HanOrder) -> [&'static str; 2] {
+    match han {
+        HanOrder::Japanese => [WEB_JAPANESE, WEB_KOREAN],
+        HanOrder::Chinese => [WEB_KOREAN, WEB_JAPANESE],
+    }
 }
 
 /// Every fallback face we look for, in chain order: `(key, candidate files)`. One file per script
@@ -1228,6 +1255,14 @@ mod tests {
                 let tail = &chain[chain.len() - fb_keys.len()..];
                 assert_eq!(tail, fb_keys.as_slice(), "{role} must end its chain with the fallback faces");
             }
+        }
+    }
+
+    #[test]
+    fn the_web_fallback_leads_with_the_japanese_face_only_in_a_japanese_interface() {
+        assert_eq!(web_fallback_order(HanOrder::of(Language::Ja)), [WEB_JAPANESE, WEB_KOREAN]);
+        for l in [Language::Ko, Language::En, Language::Zh] {
+            assert_eq!(web_fallback_order(HanOrder::of(l)), [WEB_KOREAN, WEB_JAPANESE], "{l:?}");
         }
     }
 

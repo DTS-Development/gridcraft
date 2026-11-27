@@ -61,9 +61,12 @@ pub fn start() {
                     }
                     let mut app = SheetApp::new(session, services);
                     app.ui.system_theme = true;
-                    // The PPM build starts in Korean; the upstream one follows the browser (see `start_language`).
-                    app.ui.language =
-                        crate::gate::start_language(gridcraft_engine::hostlock::HOST_BUILD, gridcraft_ui_egui::i18n::Language::system());
+                    // The PPM build starts in the page's `?lang=`, else Korean; the upstream one follows the browser (see `start_language`).
+                    app.ui.language = crate::gate::start_language(
+                        gridcraft_engine::hostlock::HOST_BUILD,
+                        gridcraft_ui_egui::i18n::Language::system(),
+                        query_param("lang").as_deref(),
+                    );
                     SheetApp::setup_context_for_language(&cc.egui_ctx, false, app.ui.language);
                     if let Some(bridge) = &app_bridge {
                         if let Some(author) = query_param("author") {
